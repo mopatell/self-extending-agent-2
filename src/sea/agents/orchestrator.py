@@ -50,7 +50,7 @@ class Orchestrator:
         self.sandbox = sandbox
         self.human_factory = human_factory
         self.listeners = listeners or []
-        self.providers = providers or {}
+        self.providers = providers if providers is not None else {}
         self.registry = Registry(db, sandbox)
 
     def provider(self, role: str) -> Provider:
@@ -61,7 +61,14 @@ class Orchestrator:
     # ------------------------------------------------------------------ public
 
     async def start(self, conversation_id: str, task: str) -> dict[str, Any]:
-        run_id = self.db.create_run(conversation_id, task)
+        return await self.start_existing(self.db.create_run(conversation_id, task))
+
+    async def start_existing(self, run_id: str) -> dict[str, Any]:
+        """Drive a run whose row already exists (the API creates the row first, then calls this)."""
+        run = self.db.get_run(run_id)
+        if not run:
+            raise ValueError("unknown run")
+        conversation_id, task = run["conversation_id"], run["task"]
         self.db.add_message(conversation_id, "user", task)
         emitter = Emitter(self.db, run_id, self.listeners)
         emitter.emit("run_started", task=task)

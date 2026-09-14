@@ -218,6 +218,39 @@ def cmd_resume(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def cmd_chat(args: argparse.Namespace) -> None:
+    """Multi-turn: every message is a run in the same conversation, so the planner sees the history."""
+    db = DB()
+    cid = db.create_conversation(title="chat", cid=args.conversation)
+    interactive = sys.stdin.isatty()
+    orch = _orchestrator(db, interactive)
+    console.print(f"[dim]conversation {cid} · type a task, or /quit[/]")
+    for m in db.get_messages(cid)[-6:]:
+        console.print(f"[dim]{m['role']}: {_short(m['content'], 200)}[/]")
+    while True:
+        try:
+            text = Prompt.ask("[bold]you[/]").strip()
+        except (EOFError, KeyboardInterrupt):
+            break
+        if not text:
+            continue
+        if text in ("/quit", "/exit", "/q"):
+            break
+        if text == "/tools":
+            cmd_tools(argparse.Namespace(name=None))
+            continue
+        run = asyncio.run(orch.start(cid, text))
+        if run["status"] != "completed":
+            console.print(f"[yellow]run {run['id']} ended with status {run['status']}[/]")
+    console.print(f"[dim]bye · resume this chat with: sea chat -c {cid}[/]")
+
+
+def cmd_serve(args: argparse.Namespace) -> None:
+    import uvicorn
+
+    uvicorn.run("sea.api:app", host=args.host, port=args.port, reload=False)
+
+
 def cmd_cancel(args: argparse.Namespace) -> None:
     db = DB()
     run = db.get_run(args.run_id)
@@ -307,6 +340,15 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--detached", action="store_true", help="don't prompt; pause the run on approvals")
     p.set_defaults(fn=cmd_run)
 
+    p = sub.add_parser("chat", help="multi-turn conversation")
+    p.add_argument("--conversation", "-c", help="conversation id to continue")
+    p.set_defaults(fn=cmd_chat)
+
+    p = sub.add_parser("serve", help="start the HTTP API")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=8000)
+    p.set_defaults(fn=cmd_serve)
+
     p = sub.add_parser("resume", help="answer a pending approval and continue a paused run")
     p.add_argument("run_id")
     p.set_defaults(fn=cmd_resume)
@@ -328,8 +370,7 @@ def main(argv: list[str] | None = None) -> None:
     p.set_defaults(fn=cmd_tools)
 
     args = parser.parse_args(argv)
-    if args.cmd == "run":
-        settings.db_path.parent.mkdir(parents=True, exist_ok=True)
+    settings.db_path.parent.mkdir(parents=True, exist_ok=True)
     args.fn(args)
 
 
