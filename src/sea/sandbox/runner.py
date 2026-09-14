@@ -1,0 +1,108 @@
+"""Where agent-written code and shell commands run.
+
+`DockerSandbox` is the real thing (M2). `LocalSandbox` runs on the host with a
+timeout only - it exists for machines without Docker and for tests, and must be
+opted into with SANDBOX=local.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import shutil
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Protocol
+
+from sea.config import settings
+
+
+@dataclass
+class Result:
+    ok: bool
+    output: str
+
+
+class Sandbox(Protocol):
+    async def shell(self, command: str, workspace: Path, timeout: int = 30) -> Result: ...
+
+    async def run_python(
+        self, code: str, workspace: Path, stdin: str = "", network: bool = False, timeout: int = 30
+    ) -> Result: ...
+
+
+async def _run(argv: list[str], cwd: Path | None, stdin: str, timeout: int) -> Result:
+    proc = await asyncio.create_subprocess_exec(
+        *argv,
+        cwd=cwd,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(stdin.encode()), timeout)
+    except TimeoutError:
+        proc.kill()
+        return Result(False, f"timed out after {timeout}s")
+    return Result(proc.returncode == 0, out.decode(errors="replace"))
+
+
+class LocalSandbox:
+    """Host execution. No isolation beyond a timeout. Dev/test only."""
+
+    async def shell(self, command: str, workspace: Path, timeout: int = 30) -> Result:
+        return await _run(["bash", "-c", command], workspace, "", timeout)
+
+    async def run_python(
+        self, code: str, workspace: Path, stdin: str = "", network: bool = False, timeout: int = 30
+    ) -> Result:
+        with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
+            f.write(code)
+            path = f.name
+        try:
+            return await _run(["python3", path], workspace, stdin, timeout)
+        finally:
+            os.unlink(path)
+
+
+class DockerSandbox:
+    """Runs everything in the `sea-sandbox` image: no network by default, memory/cpu/pid limits,
+    workspace mounted at /workspace."""
+
+    def __init__(self, image: str | None = None):
+        self.image = image or settings.sandbox_image
+
+    def _argv(self, workspace: Path, network: bool, extra: list[str]) -> list[str]:
+        return [
+            "docker", "run", "--rm", "-i",
+            "--network", "bridge" if network else "none",
+            "--memory", "512m", "--cpus", "1", "--pids-limit", "128",
+            "-v", f"{workspace}:/workspace", "-w", "/workspace",
+            self.image, *extra,
+        ]  # fmt: skip
+
+    async def shell(self, command: str, workspace: Path, timeout: int = 30) -> Result:
+        return await _run(self._argv(workspace, False, ["bash", "-c", command]), None, "", timeout)
+
+    async def run_python(
+        self, code: str, workspace: Path, stdin: str = "", network: bool = False, timeout: int = 30
+    ) -> Result:
+        # Code goes in via a temp file mounted read-only; stdin carries the tool arguments.
+        with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
+            f.write(code)
+            path = f.name
+        try:
+            argv = self._argv(workspace, network, ["python", "/tmp/sea_script.py"])
+            argv[argv.index("-w") : argv.index("-w")] = ["-v", f"{path}:/tmp/sea_script.py:ro"]
+            return await _run(argv, None, stdin, timeout)
+        finally:
+            os.unlink(path)
+
+
+def get_sandbox() -> Sandbox:
+    if os.environ.get("SANDBOX", "docker") == "local":
+        return LocalSandbox()
+    if shutil.which("docker") is None:
+        raise RuntimeError("Docker not found. Install Docker, or set SANDBOX=local (no isolation!).")
+    return DockerSandbox()

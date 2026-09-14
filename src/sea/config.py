@@ -15,11 +15,11 @@ def _env(name: str, default: str) -> str:
     return os.environ.get(name, default)
 
 
-@dataclass(frozen=True)
+@dataclass
 class Settings:
     planner_model: str = field(default_factory=lambda: _env("PLANNER_MODEL", "groq:openai/gpt-oss-120b"))
     toolsmith_model: str = field(default_factory=lambda: _env("TOOLSMITH_MODEL", "groq:openai/gpt-oss-120b"))
-    worker_model: str = field(default_factory=lambda: _env("WORKER_MODEL", "groq:llama-3.3-70b-versatile"))
+    worker_model: str = field(default_factory=lambda: _env("WORKER_MODEL", "groq:openai/gpt-oss-20b"))
 
     max_concurrent_llm_calls: int = field(default_factory=lambda: int(_env("MAX_CONCURRENT_LLM_CALLS", "2")))
     max_parallel_steps: int = field(default_factory=lambda: int(_env("MAX_PARALLEL_STEPS", "2")))
