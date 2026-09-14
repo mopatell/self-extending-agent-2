@@ -1,0 +1,41 @@
+[project]
+name = "sea"
+version = "0.2.0"
+description = "Self-extending AI agent: plans a task, builds and tests the tools it lacks, runs them in a sandbox, with human-in-the-loop and SQL-backed memory."
+readme = "README.md"
+authors = [{ name = "Sohail Patel", email = "patelsohailp7@gmail.com" }]
+requires-python = ">=3.12"
+dependencies = [
+    "openai>=1.60",
+    "pydantic>=2.8",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "jsonschema>=4.23",
+    "rich>=13.7",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+anthropic = ["anthropic>=1.4"]
+
+[project.scripts]
+sea = "sea.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "ruff>=0.6", "httpx>=0.27"]
+
+[build-system]
+requires = ["uv_build>=0.11.7,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = ["docker: needs a running Docker daemon", "live: calls a real LLM provider"]
+addopts = "-m 'not docker and not live'"
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
