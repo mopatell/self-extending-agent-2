@@ -151,3 +151,35 @@ def test_completion_as_message():
     c = Completion("t", [ToolCall("c", "n", {})], raw=[1])
     m = c.as_message()
     assert m.role == "assistant" and m.tool_calls == c.tool_calls and m.raw == [1]
+
+
+async def test_groq_parse_failures_become_malformed_tool_call(monkeypatch):
+    import httpx
+    from openai import BadRequestError
+
+    from sea.llm import MalformedToolCall
+
+    monkeypatch.setenv("GROQ_API_KEY", "x")
+    provider = OpenAICompatProvider("groq", "m")
+
+    def make(code: str):
+        resp = httpx.Response(400, request=httpx.Request("POST", "http://x"))
+        body = {"error": {"code": code, "message": "Parsing failed", "failed_generation": ""}}
+        return BadRequestError(str(body), response=resp, body=body)
+
+    for code in ("tool_use_failed", "output_parse_failed"):
+
+        async def boom(code=code, **kwargs):
+            raise make(code)
+
+        monkeypatch.setattr(provider.client.chat.completions, "create", boom)
+        with pytest.raises(MalformedToolCall):
+            await provider.complete([Message.user("hi")])
+
+    async def other(**kwargs):
+        resp = httpx.Response(400, request=httpx.Request("POST", "http://x"))
+        raise BadRequestError("bad model", response=resp, body={"error": {"code": "model_not_found"}})
+
+    monkeypatch.setattr(provider.client.chat.completions, "create", other)
+    with pytest.raises(BadRequestError):
+        await provider.complete([Message.user("hi")])

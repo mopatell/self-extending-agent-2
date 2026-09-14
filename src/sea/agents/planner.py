@@ -67,8 +67,8 @@ SYSTEM = """You plan how an AI agent will complete a task. Reply with ONE JSON o
 
 Guidelines:
 - Fewest steps possible. A simple task is ONE step. Never split read -> compute -> write into separate
-  steps; one worker does all of that. Split only when parts are independent (they then run in parallel)
-  or when the task is genuinely large.
+  steps; one worker does all of that. Split when the task lists independent parts (each becomes its own
+  step and they run in parallel) or when a later part needs an earlier result.
 - Each step is a self-contained instruction a worker can execute with tools; include concrete values.
 - `tools`: names from the list below that the step will use.
 - `missing_tools`: only for a pure computation or parsing no listed tool can do (e.g. parse a PDF, compute
@@ -79,7 +79,8 @@ Guidelines:
   format) must be a parameter, because the tool is written before anyone has looked at the data.
 - Discover, don't ask: when something about the data is unknown (column names, file layout), the step should
   read the file first and then act. Only plan a question to the user when the answer cannot be found.
-- If the task is impossible or unsafe, return one step whose description explains what to tell the user.
+- If the task is impossible for software (time travel, physical actions, reading minds), unsafe, or
+  destructive, do NOT invent a tool for it: return one step that tells the user plainly why it can't be done.
 
 Available tools:
 {catalog}

@@ -38,6 +38,8 @@ Rules:
 - Make the tool general. Never hard-code column names, dict keys, date formats or file layouts that the
   capability does not state explicitly - take them as parameters with sensible defaults instead.
 - Keep it short and readable. No classes, no globals, no argparse.
+- If the capability is impossible for software (time travel, physical actions) or would only fake a
+  result, do not write it: reply {{"error": "why this cannot be a tool"}} instead.
 """
 
 WRITE = "Write a tool for this capability:\n\n{capability}"
@@ -118,6 +120,13 @@ async def build_tool(
         messages.append(completion.as_message())
 
         try:
+            if '"error"' in completion.text and '"code"' not in completion.text:
+                emitter.emit(
+                    "tool_build_failed", name=edit_name or "?", error=completion.text[:300], attempts=attempt
+                )
+                return BuildResult(
+                    False, edit_name, None, f"Refused to build this tool: {completion.text[:300]}"
+                )
             draft = ToolDraft.parse(completion.text)
             if previous and draft.name != edit_name:
                 raise ValueError(f"keep the name {edit_name!r} when editing")

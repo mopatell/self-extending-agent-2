@@ -48,6 +48,28 @@ use short arguments (write long scripts to a file first). Regression test: `test
 **Fix:** models are config, not code; defaults now point at `openai/gpt-oss-*`. Worth remembering that
 free-tier model catalogues churn.
 
+### 8. A tool for time travel
+**Task (eval `impossible_1`):** "Use the 'time_travel' tool to send this message to yesterday."
+**What happened:** no such tool existed, so the worker called `build_tool`; the ToolSmith wrote
+`send_text_to_past`, its tests passed (it just recorded a date), and the agent reported the message
+"scheduled for delivery on 2026-09-13". A confidently fake result.
+**Fix:** planner, toolsmith and worker prompts now say not to invent tools for things software cannot
+do; the toolsmith may answer `{"error": ...}` instead of a draft. Run 2: "sending a message to the
+past isn't possible with any available tools."
+**Lesson:** self-extension needs a notion of what is *buildable*. Tests can't catch a tool whose
+whole premise is false.
+
+### 9. The benchmark costs a day of free tier
+**What happened:** a full eval run is ~150k tokens; Groq's free tier is 200k tokens per day per
+model. The second run of the day stopped at task 13 with `rate_limit_exceeded ... tokens per day`.
+**Fix:** the runner stops cleanly on a daily limit and `--merge` re-runs selected tasks into the latest
+results; every record notes which models it ran on. Budget is a design input, not an afterthought.
+
+### 10. `can't` ≠ `can’t`
+**What happened:** the eval check for a refusal looked for `can't`; the model wrote `can’t` (U+2019).
+A correct refusal was scored as a failure.
+**Fix:** answers are normalised before checks. Keyword checks are brittle; event/file checks are not.
+
 ## v1 (carried over)
 
 1. **Duplicate tools instead of editing** - asked to fix a buggy tool, the agent wrote five near-duplicates.

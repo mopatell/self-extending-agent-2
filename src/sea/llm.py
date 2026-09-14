@@ -162,7 +162,9 @@ class OpenAICompatProvider:
             async with _limiter():
                 resp = await self.client.chat.completions.create(**kwargs)
         except BadRequestError as e:
-            if "tool_use_failed" in str(e) or "tool call" in str(e).lower():
+            # Groq reports unparsable model output as a 400 (tool_use_failed / output_parse_failed).
+            # That's the model's fault, not the request's: let the loop tell it to try again.
+            if any(k in str(e) for k in ("tool_use_failed", "output_parse_failed", "failed_generation")):
                 raise MalformedToolCall(str(e)[:500]) from e
             raise
 
