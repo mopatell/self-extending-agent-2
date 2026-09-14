@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from sea.agents import worker
+from sea.agents import toolsmith, worker
 from sea.config import settings
 from sea.db import DB
 from sea.events import Emitter, Listener
@@ -19,6 +19,7 @@ from sea.llm import Message, Provider, get_provider
 from sea.sandbox.runner import Sandbox
 from sea.tools.base import Tool, ToolContext
 from sea.tools.builtin import builtin_tools
+from sea.tools.registry import Registry
 
 HumanFactory = Callable[[DB, str, Emitter, dict[str, dict[str, Any]]], Human]
 
@@ -41,6 +42,7 @@ class Orchestrator:
         self.human_factory = human_factory
         self.listeners = listeners or []
         self.providers = providers or {}
+        self.registry = Registry(db, sandbox)
 
     def provider(self, role: str) -> Provider:
         if role in self.providers:
@@ -124,6 +126,7 @@ class Orchestrator:
         tools = self._tools()
         workspace = settings.workspace_for(run["conversation_id"])
         results: dict[str, str] = {}
+        smith = self._toolsmith(run_id, workspace, emitter, tools)
 
         for step in state["plan"]["steps"]:
             sstate = state["steps"][step["id"]]
@@ -135,7 +138,14 @@ class Orchestrator:
                 sstate["messages"] = worker.build_messages(step, task, results, tools)
                 step_emitter.emit("step_started", description=step["description"])
             sstate["status"] = "running"
-            ctx = ToolContext(workspace=workspace, sandbox=self.sandbox, human=human, step_id=step["id"])
+            ctx = ToolContext(
+                workspace=workspace,
+                sandbox=self.sandbox,
+                human=human,
+                step_id=step["id"],
+                tools=tools,
+                toolsmith=smith,
+            )
             result = await worker.run_step(
                 provider=self.provider("worker"),
                 messages=sstate["messages"],
@@ -156,7 +166,32 @@ class Orchestrator:
         return "\n\n".join(f"[{sid}] {r}" for sid, r in results.items())
 
     def _tools(self) -> dict[str, Tool]:
-        return builtin_tools()
+        return {**builtin_tools(), **self.registry.load()}
+
+    def _toolsmith(self, run_id: str, workspace: Any, emitter: Emitter, tools: dict[str, Tool]):
+        """Closure the worker's build_tool/fix_tool built-ins call. Adds the result to the live tool set."""
+        reserved = set(builtin_tools())
+
+        async def smith(
+            capability: str | None = None, edit_name: str | None = None, problem: str | None = None
+        ) -> str:
+            result = await toolsmith.build_tool(
+                provider=self.provider("toolsmith"),
+                registry=self.registry,
+                workspace=workspace,
+                emitter=emitter,
+                db=self.db,
+                run_id=run_id,
+                capability=capability,
+                edit_name=edit_name,
+                problem=problem,
+                reserved=reserved,
+            )
+            if result.ok and result.name:
+                tools[result.name] = self.registry.load()[result.name]
+            return result.message
+
+        return smith
 
     def _checkpoint(self, run_id: str, state: dict[str, Any], **fields: Any) -> None:
         self.db.update_run(run_id, state=_serialize(state), **fields)

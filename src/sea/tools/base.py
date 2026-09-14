@@ -22,6 +22,12 @@ class ToolContext:
     sandbox: Sandbox
     human: Human
     step_id: str | None = None
+    tools: dict[str, Tool] | None = None  # the live tool set; build_tool adds to it
+    toolsmith: ToolSmithFn | None = None  # set by the orchestrator
+
+
+# async toolsmith(capability=..., edit_name=..., problem=...) -> message for the model
+ToolSmithFn = Callable[..., Awaitable[str]]
 
 
 ToolFn = Callable[..., Awaitable[str]]

@@ -40,7 +40,6 @@ async def run_loop(
     max_steps: int | None = None,
 ) -> LoopResult:
     max_steps = max_steps or settings.max_loop_steps
-    specs = [t.spec for t in tools.values()]
 
     # Resume: finish any tool calls the previous attempt didn't get to.
     pending = _unanswered_calls(messages)
@@ -48,6 +47,7 @@ async def run_loop(
         await _handle_calls(pending, messages, tools, ctx, emitter, human, db)
 
     for step in range(1, max_steps + 1):
+        specs = [t.spec for t in tools.values()]  # recomputed: build_tool may add tools mid-run
         completion = await provider.complete(messages, tools=specs)
         db.add_usage(run_id, completion.usage.input_tokens, completion.usage.output_tokens)
         emitter.emit(

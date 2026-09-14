@@ -57,6 +57,18 @@ async def ask_human(ctx: ToolContext, question: str) -> str:
     return decision.get("answer", "")
 
 
+async def build_tool(ctx: ToolContext, capability: str) -> str:
+    if ctx.toolsmith is None:
+        return "Error: tool building is not available in this context"
+    return await ctx.toolsmith(capability=capability)
+
+
+async def fix_tool(ctx: ToolContext, name: str, problem: str) -> str:
+    if ctx.toolsmith is None:
+        return "Error: tool editing is not available in this context"
+    return await ctx.toolsmith(edit_name=name, problem=problem)
+
+
 def _spec(name: str, description: str, props: dict, required: list[str]) -> ToolSpec:
     return ToolSpec(
         name,
@@ -112,6 +124,25 @@ BUILTIN_TOOLS: list[Tool] = [
             ["question"],
         ),
         ask_human,
+    ),
+    Tool(
+        _spec(
+            "build_tool",
+            "Create a new reusable Python tool when no existing tool can do a needed computation. "
+            "Describe precisely what it takes and returns; it is written, tested and made available to you.",
+            {"capability": {"type": "string"}},
+            ["capability"],
+        ),
+        build_tool,
+    ),
+    Tool(
+        _spec(
+            "fix_tool",
+            "Repair an agent-written tool that returns wrong results. Give its name and what is wrong.",
+            {"name": {"type": "string"}, "problem": {"type": "string"}},
+            ["name", "problem"],
+        ),
+        fix_tool,
     ),
 ]
 

@@ -8,6 +8,7 @@ opted into with SANDBOX=local.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
 import tempfile
@@ -106,3 +107,39 @@ def get_sandbox() -> Sandbox:
     if shutil.which("docker") is None:
         raise RuntimeError("Docker not found. Install Docker, or set SANDBOX=local (no isolation!).")
     return DockerSandbox()
+
+
+# --------------------------------------------------------------------------- tool drivers
+
+TESTS_PASSED = "__SEA_TESTS_PASSED__"
+RESULT_MARK = "__SEA_RESULT__"
+
+
+async def run_tool_tests(sandbox: Sandbox, source: str, test_code: str, workspace: Path) -> Result:
+    """Runs the tool's tests; ok only if every assert passed."""
+    script = f"{source}\n\n{test_code}\n\nprint({TESTS_PASSED!r})\n"
+    result = await sandbox.run_python(script, workspace, network=False, timeout=30)
+    passed = result.ok and TESTS_PASSED in result.output
+    return Result(passed, result.output.replace(TESTS_PASSED, "").strip())
+
+
+async def call_tool(
+    sandbox: Sandbox, source: str, name: str, arguments: dict, workspace: Path, network: bool
+) -> Result:
+    """Calls tool `name` with JSON arguments on stdin; the JSON result comes back after a marker."""
+    script = (
+        "import json, sys\n"
+        f"{source}\n\n"
+        "_args = json.load(sys.stdin)\n"
+        f"_result = {name}(**_args)\n"
+        f"print({RESULT_MARK!r} + json.dumps(_result, default=str))\n"
+    )
+    result = await sandbox.run_python(
+        script, workspace, stdin=json.dumps(arguments), network=network, timeout=60
+    )
+    if RESULT_MARK not in result.output:
+        return Result(False, result.output.strip() or "tool produced no result")
+    logs, _, payload = result.output.rpartition(RESULT_MARK)
+    value = json.loads(payload.strip())
+    text = value if isinstance(value, str) else json.dumps(value, default=str)
+    return Result(True, (logs.strip() + "\n" + text).strip() if logs.strip() else text)
