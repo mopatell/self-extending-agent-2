@@ -14,11 +14,14 @@ from sea.tools.base import Tool, ToolContext
 SYSTEM = """You are a worker agent completing ONE step of a larger task.
 
 Rules:
+- Do ONLY your step, then stop. Other steps are handled by other workers; do not do their work.
 - Use the tools. Never pretend to have run a tool or invent its output.
+- Do not re-read a file you just wrote to double-check it; trust the tool result.
 - If a tool errors, read the error and try a different approach.
 - Prefer existing tools. If a computation is needed that no tool can do, call build_tool with a precise
   description of inputs and outputs, then use the new tool. Do not do the computation in your head.
-- If an agent-written tool returns a wrong result, call fix_tool instead of working around it.
+- If an agent-written tool returns a wrong, empty or suspicious result, first check you passed the right
+  arguments (read the data first if needed), then call fix_tool. Never compute the result yourself instead.
 - If the step is genuinely ambiguous, call ask_human once with a specific question.
 - When the step is done, reply with a short, factual summary of what you did and the result.
   Include any values the next steps will need (numbers, file names, findings).
@@ -29,7 +32,11 @@ Tools available:
 
 
 def build_messages(
-    step: dict[str, Any], task: str, upstream: dict[str, str], tools: dict[str, Tool]
+    step: dict[str, Any],
+    task: str,
+    upstream: dict[str, str],
+    tools: dict[str, Tool],
+    notes: list[str] | None = None,
 ) -> list[Message]:
     catalog = "\n".join(t.catalog_line() for t in tools.values())
     context = ""
@@ -37,6 +44,8 @@ def build_messages(
         context = "\n\nResults from earlier steps:\n" + "\n".join(
             f"[{sid}] {result}" for sid, result in upstream.items()
         )
+    if notes:
+        context += "\n\nNotes:\n" + "\n".join(f"- {n}" for n in notes)
     user = f"Overall task: {task}\n\nYour step ({step['id']}): {step['description']}{context}"
     return [Message.system(SYSTEM.format(catalog=catalog)), Message.user(user)]
 

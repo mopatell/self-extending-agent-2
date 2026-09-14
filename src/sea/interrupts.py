@@ -50,6 +50,9 @@ class DetachedHuman:
     async def decide(self, kind: str, key: str, payload: dict[str, Any]) -> dict[str, Any]:
         if key in self.prefilled:
             return self.prefilled[key]
+        for pending in self.db.pending_approvals(self.run_id):
+            if pending["payload"].get("key") == key:
+                raise Interrupt(pending["id"], kind, payload)
         approval_id = self.db.create_approval(self.run_id, kind, {"key": key, **payload})
         self.emitter.emit(
             "approval_requested" if kind != QUESTION else "question_asked",

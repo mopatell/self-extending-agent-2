@@ -15,9 +15,15 @@ from sea.config import settings
 from sea.db import DB
 from sea.events import Emitter
 from sea.interrupts import TOOL_CALL, Human
-from sea.llm import Message, Provider, ToolCall
+from sea.llm import MalformedToolCall, Message, Provider, ToolCall
 from sea.policy import ALLOW, DENY, classify
 from sea.tools.base import Tool, ToolContext, truncate
+
+MALFORMED_CALL_HINT = (
+    "Your last tool call could not be parsed and was dropped. Call the tool again with short, simple "
+    "JSON arguments. If you need to run a long script, write it to a file with write_file first, then "
+    "run it with run_shell."
+)
 
 
 @dataclass
@@ -48,7 +54,14 @@ async def run_loop(
 
     for step in range(1, max_steps + 1):
         specs = [t.spec for t in tools.values()]  # recomputed: build_tool may add tools mid-run
-        completion = await provider.complete(messages, tools=specs)
+        try:
+            completion = await provider.complete(messages, tools=specs)
+        except MalformedToolCall as e:
+            emitter.emit(
+                "llm_called", model=provider.model, tokens_in=0, tokens_out=0, tool_calls=[], error=str(e)
+            )
+            messages.append(Message.user(MALFORMED_CALL_HINT))
+            continue
         db.add_usage(run_id, completion.usage.input_tokens, completion.usage.output_tokens)
         emitter.emit(
             "llm_called",

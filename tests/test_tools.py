@@ -10,6 +10,7 @@ from sea.llm import FakeProvider, tool_call
 from sea.sandbox.runner import DockerSandbox, LocalSandbox, call_tool, run_tool_tests
 from sea.tools.builtin import builtin_tools
 from sea.tools.registry import Registry, ToolDraft, validate
+from tests.conftest import single_step_planner
 
 RESERVED = set(builtin_tools())
 
@@ -215,9 +216,7 @@ async def test_toolsmith_rejects_duplicate_name(db: DB, registry: Registry, tmp_
 # ----------------------------------------------------------------------------- end to end (orchestrator)
 
 
-async def test_worker_builds_then_uses_tool(db: DB, tmp_path, monkeypatch):
-    monkeypatch.setattr("sea.config.settings.workspaces_dir", tmp_path)
-    monkeypatch.setattr("sea.config.settings.db_path", tmp_path / "db.sqlite")
+async def test_worker_builds_then_uses_tool(db: DB, workspace):
     worker = FakeProvider(
         [
             tool_call("build_tool", {"capability": "count words in text"}),
@@ -226,7 +225,9 @@ async def test_worker_builds_then_uses_tool(db: DB, tmp_path, monkeypatch):
         ]
     )
     smith = FakeProvider([json.dumps(GOOD)])
-    orch = Orchestrator(db, LocalSandbox(), providers={"worker": worker, "toolsmith": smith})
+    orch = Orchestrator(
+        db, LocalSandbox(), providers={"worker": worker, "toolsmith": smith, "planner": single_step_planner()}
+    )
     run = await orch.start(db.create_conversation(), "count the words in 'x y z'")
     assert run["status"] == "completed" and run["answer"] == "There are 3 words."
     # The new tool was offered to the model on the very next turn.

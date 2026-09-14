@@ -63,9 +63,9 @@ class DB:
 
     # ----------------------------------------------------------------- conversations
 
-    def create_conversation(self, title: str = "") -> str:
-        cid = new_id()
-        self.conn.execute("INSERT INTO conversations (id, title) VALUES (?, ?)", (cid, title))
+    def create_conversation(self, title: str = "", cid: str | None = None) -> str:
+        cid = cid or new_id()
+        self.conn.execute("INSERT OR IGNORE INTO conversations (id, title) VALUES (?, ?)", (cid, title))
         return cid
 
     def get_conversation(self, cid: str) -> dict[str, Any] | None:

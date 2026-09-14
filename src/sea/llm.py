@@ -90,6 +90,10 @@ class Completion:
         return Message("assistant", self.text, tool_calls=self.tool_calls, raw=self.raw)
 
 
+class MalformedToolCall(Exception):
+    """The model produced a tool call the provider could not parse. Retryable by telling the model."""
+
+
 class Provider(Protocol):
     model: str
 
@@ -152,8 +156,15 @@ class OpenAICompatProvider:
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
 
-        async with _limiter():
-            resp = await self.client.chat.completions.create(**kwargs)
+        from openai import BadRequestError
+
+        try:
+            async with _limiter():
+                resp = await self.client.chat.completions.create(**kwargs)
+        except BadRequestError as e:
+            if "tool_use_failed" in str(e) or "tool call" in str(e).lower():
+                raise MalformedToolCall(str(e)[:500]) from e
+            raise
 
         choice = resp.choices[0].message
         calls = [

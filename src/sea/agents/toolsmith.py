@@ -35,6 +35,8 @@ Rules:
   no other way, and then tests must not touch the network.
 - test_code: 3-6 assert statements on real inputs with known outputs, including one edge case.
   Tests run in the same working directory as the tool; they may create temp files there.
+- Make the tool general. Never hard-code column names, dict keys, date formats or file layouts that the
+  capability does not state explicitly - take them as parameters with sensible defaults instead.
 - Keep it short and readable. No classes, no globals, no argparse.
 """
 

@@ -9,6 +9,7 @@ from sea.loop import run_loop
 from sea.sandbox.runner import LocalSandbox
 from sea.tools.base import Tool, ToolContext
 from sea.tools.builtin import builtin_tools
+from tests.conftest import single_step_planner
 
 
 async def add(ctx: ToolContext, a: int, b: int) -> str:
@@ -136,10 +137,10 @@ async def test_declined_tool_tells_model(harness):
 # ----------------------------------------------------------------------------- orchestrator
 
 
-async def test_orchestrator_single_step_run(db: DB, tmp_path, monkeypatch):
-    monkeypatch.setattr("sea.config.settings.workspaces_dir", tmp_path)
+async def test_orchestrator_single_step_run(db: DB, workspace):
+    tmp_path = workspace
     worker = FakeProvider([tool_call("write_file", {"path": "a.txt", "content": "hi"}), "wrote it"])
-    orch = Orchestrator(db, LocalSandbox(), providers={"worker": worker})
+    orch = Orchestrator(db, LocalSandbox(), providers={"worker": worker, "planner": single_step_planner()})
     cid = db.create_conversation()
 
     run = await orch.start(cid, "write hi to a.txt")
@@ -153,16 +154,16 @@ async def test_orchestrator_single_step_run(db: DB, tmp_path, monkeypatch):
     assert run["status"] == "completed" and run["answer"] == "wrote it"
     assert (tmp_path / cid / "a.txt").read_text() == "hi"
     types = [e["type"] for e in db.get_events(run["id"])]
-    assert types[:3] == ["run_started", "step_started", "llm_called"]
+    assert types[:5] == ["run_started", "llm_called", "plan_proposed", "plan_approved", "step_started"]
     assert "run_paused" in types and "run_resumed" in types and types[-1] == "run_completed"
     assert [m["role"] for m in db.get_messages(cid)] == ["user", "assistant"]
     assert len(worker.requests) == 2  # the LLM was not re-asked after resume
 
 
-async def test_orchestrator_denied_action(db: DB, tmp_path, monkeypatch):
-    monkeypatch.setattr("sea.config.settings.workspaces_dir", tmp_path)
+async def test_orchestrator_denied_action(db: DB, workspace):
+    tmp_path = workspace
     worker = FakeProvider([tool_call("write_file", {"path": "a.txt", "content": "hi"}), "could not write"])
-    orch = Orchestrator(db, LocalSandbox(), providers={"worker": worker})
+    orch = Orchestrator(db, LocalSandbox(), providers={"worker": worker, "planner": single_step_planner()})
     run = await orch.start(db.create_conversation(), "write")
     aid = db.pending_approvals(run["id"])[0]["id"]
     run = await orch.resume(run["id"], aid, {"approved": False, "reason": "no"})
@@ -172,8 +173,30 @@ async def test_orchestrator_denied_action(db: DB, tmp_path, monkeypatch):
         await orch.resume(run["id"], aid, {"approved": True})
 
 
-async def test_orchestrator_records_failure(db: DB, tmp_path, monkeypatch):
-    monkeypatch.setattr("sea.config.settings.workspaces_dir", tmp_path)
-    orch = Orchestrator(db, LocalSandbox(), providers={"worker": FakeProvider([])})
+async def test_orchestrator_records_failure(db: DB, workspace):
+    orch = Orchestrator(
+        db, LocalSandbox(), providers={"worker": FakeProvider([]), "planner": single_step_planner()}
+    )
     run = await orch.start(db.create_conversation(), "x")
     assert run["status"] == "failed" and "exhausted" in run["error"]
+
+
+async def test_malformed_tool_call_is_fed_back(harness):
+    from sea.llm import MalformedToolCall
+
+    class Flaky(FakeProvider):
+        async def complete(self, messages, tools=None, json_mode=False):
+            self.requests.append({"messages": list(messages), "tools": tools or [], "json_mode": json_mode})
+            if len(self.requests) == 1:
+                raise MalformedToolCall("tool_use_failed")
+            return Completion("recovered")
+
+    db, rid, emitter, human, ctx, seen = harness
+    messages = [Message.user("u")]
+    result = await run_loop(
+        provider=Flaky([]), messages=messages, tools=TOOLS, ctx=ctx, emitter=emitter,
+        human=human, db=db, run_id=rid,
+    )  # fmt: skip
+    assert result.text == "recovered"
+    assert "could not be parsed" in messages[1].content and messages[1].role == "user"
+    assert seen[0].payload.get("error")

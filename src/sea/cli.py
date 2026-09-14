@@ -9,6 +9,7 @@ import sys
 from typing import Any
 
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
@@ -31,7 +32,7 @@ def render(event: Event) -> None:
     t = event.type
     sid = f"[dim]{p['step_id']}[/] " if p.get("step_id") else ""
     if t == "run_started":
-        console.print(f"[bold]▶ task:[/] {p['task']}")
+        console.print(f"[bold]▶ task:[/] {escape(p['task'])}")
     elif t == "plan_proposed":
         table = Table(title="Proposed plan", show_lines=False)
         table.add_column("id"), table.add_column("step"), table.add_column("after"), table.add_column("needs")
@@ -41,19 +42,21 @@ def render(event: Event) -> None:
                 if s.get("missing_tools")
                 else ""
             )
-            table.add_row(s["id"], s["description"], ", ".join(s.get("depends_on", [])) or "-", needs or "-")
+            table.add_row(
+                s["id"], escape(s["description"]), ", ".join(s.get("depends_on", [])) or "-", needs or "-"
+            )
         console.print(table)
     elif t == "tool_gap_found":
-        console.print(f"[yellow]⚒ missing tool:[/] {p['name']} — {p['description']}")
+        console.print(f"[yellow]⚒ missing tool:[/] {p['name']} — {_short(p['description'], 200)}")
     elif t == "tool_test_result":
         mark = "[green]passed[/]" if p["passed"] else "[red]failed[/]"
         console.print(f"  tests {mark} (attempt {p['attempt']})")
     elif t == "tool_registered":
         console.print(f"[green]✔ tool registered:[/] {p['name']} v{p['version']}")
     elif t == "tool_build_failed":
-        console.print(f"[red]✘ could not build tool {p['name']}:[/] {p['error']}")
+        console.print(f"[red]✘ could not build tool {p['name']}:[/] {_short(p['error'], 300)}")
     elif t == "step_started":
-        console.print(f"{sid}[bold]● step:[/] {p['description']}")
+        console.print(f"{sid}[bold]● step:[/] {escape(p['description'])}")
     elif t == "llm_called":
         calls = f" → {', '.join(p['tool_calls'])}" if p["tool_calls"] else ""
         console.print(f"{sid}[dim]llm {p['model']} ({p['tokens_in']}↑ {p['tokens_out']}↓){calls}[/]")
@@ -65,18 +68,18 @@ def render(event: Event) -> None:
     elif t == "step_completed":
         console.print(f"{sid}[green]✔ step done[/]")
     elif t == "step_failed":
-        console.print(f"{sid}[red]✘ step failed:[/] {p.get('error', '')}")
+        console.print(f"{sid}[red]✘ step failed:[/] {_short(p.get('error', ''), 300)}")
     elif t == "run_completed":
-        console.print(Panel(p["answer"], title="Answer", border_style="green"))
+        console.print(Panel(escape(p["answer"]), title="Answer", border_style="green"))
     elif t == "run_failed":
-        console.print(Panel(p["error"], title="Run failed", border_style="red"))
+        console.print(Panel(escape(p["error"]), title="Run failed", border_style="red"))
     elif t == "run_paused":
         console.print(f"[yellow]⏸ paused ({p['kind']}). Resume with:[/] sea resume {p['run_id']}")
 
 
 def _short(text: str, n: int) -> str:
     text = text.replace("\n", " ⏎ ")
-    return text if len(text) <= n else text[:n] + "…"
+    return escape(text if len(text) <= n else text[:n] + "…")
 
 
 # ----------------------------------------------------------------------------- interactive human
@@ -106,14 +109,16 @@ class ConsoleHuman:
 
     def _prompt(self, kind: str, payload: dict[str, Any]) -> dict[str, Any]:
         if kind == QUESTION:
-            console.print(Panel(payload["question"], title="The agent has a question", border_style="yellow"))
+            console.print(
+                Panel(escape(payload["question"]), title="The agent has a question", border_style="yellow")
+            )
             return {"answer": Prompt.ask("Your answer")}
         if kind == PLAN:
             if Confirm.ask("Approve this plan?", default=True):
                 return {"approved": True}
             return {"approved": False, "reason": Prompt.ask("Why? (sent to the planner)", default="")}
         args = json.dumps(payload["arguments"], indent=2)
-        body = f"[bold]{payload['name']}[/]\n{args}\n\n[dim]{payload['reason']}[/]"
+        body = f"[bold]{payload['name']}[/]\n{escape(args)}\n\n[dim]{escape(payload['reason'])}[/]"
         console.print(Panel(body, title="Approve this action?", border_style="yellow"))
         if Confirm.ask("Allow?", default=True):
             return {"approved": True}
@@ -132,8 +137,9 @@ def _orchestrator(db: DB, interactive: bool) -> Orchestrator:
 
 def cmd_run(args: argparse.Namespace) -> None:
     db = DB()
-    cid = args.conversation or db.create_conversation(title=args.task[:60])
-    run = asyncio.run(_orchestrator(db, not args.detached).start(cid, args.task))
+    cid = db.create_conversation(title=args.task[:60], cid=args.conversation)
+    interactive = not args.detached and sys.stdin.isatty()
+    run = asyncio.run(_orchestrator(db, interactive).start(cid, args.task))
     console.print(
         f"[dim]run {run['id']} · conversation {cid} · {run['tokens_in']}↑ {run['tokens_out']}↓ tokens[/]"
     )
@@ -161,9 +167,8 @@ def cmd_runs(args: argparse.Namespace) -> None:
         if not run:
             console.print("[red]no such run[/]")
             sys.exit(1)
-        console.print(
-            f"[bold]{run['task']}[/]  status={run['status']}  tokens {run['tokens_in']}↑ {run['tokens_out']}↓"
-        )
+        tokens = f"{run['tokens_in']}↑ {run['tokens_out']}↓"
+        console.print(f"[bold]{escape(run['task'])}[/]  status={run['status']}  tokens {tokens}")
         for e in db.get_events(args.run_id):
             render(Event(e["type"], e["payload"], e["seq"]))
         return
@@ -188,8 +193,10 @@ def cmd_tools(args: argparse.Namespace) -> None:
         if not t:
             console.print("[red]no such tool[/]")
             sys.exit(1)
-        console.print(Panel(t["source"], title=f"{t['name']} v{t['version']} — {t['description']}"))
-        console.print(Panel(t["test_code"], title="tests", border_style="dim"))
+        console.print(
+            Panel(escape(t["source"]), title=f"{t['name']} v{t['version']} — {escape(t['description'])}")
+        )
+        console.print(Panel(escape(t["test_code"]), title="tests", border_style="dim"))
         return
     table = Table(title="Agent-written tools")
     for col in ("name", "ver", "risk", "calls", "fails", "description"):
@@ -207,7 +214,7 @@ def main(argv: list[str] | None = None) -> None:
 
     p = sub.add_parser("run", help="run a task")
     p.add_argument("task")
-    p.add_argument("--conversation", "-c", help="continue an existing conversation id")
+    p.add_argument("--conversation", "-c", help="conversation id to use (created if new)")
     p.add_argument("--detached", action="store_true", help="don't prompt; pause the run on approvals")
     p.set_defaults(fn=cmd_run)
 
