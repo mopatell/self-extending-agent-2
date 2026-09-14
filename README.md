@@ -1,109 +1,152 @@
 # sea — a self-extending agent
 
-An AI agent that **builds the tools it is missing**. Give it a task; it plans the steps, checks
-which tools it already has, writes and tests the ones it doesn't (in a Docker sandbox), runs the
-steps — in parallel where they're independent — and asks a human before doing anything risky.
-Everything it does is saved in SQLite, so a run can be paused, resumed and replayed.
+An agent that builds the tools it is missing. Give it a task; it plans the steps, writes and
+tests any tool it lacks in a Docker sandbox, runs the steps (in parallel where possible), asks a
+human before anything risky, and stores everything in SQLite so runs can be paused, resumed and
+replayed.
 
-```
-$ sea run "Is 104729 a prime number?"
-▶ task: Is 104729 a prime number?
-s1 ● step: Check whether 104729 is prime
-s1 ⚙ run_shell("python3 -c 'import sympy…'")      ← runs in the sandbox; sympy isn't there
-s1   ↳ ModuleNotFoundError: No module named 'sympy'
-s1 ⚙ build_tool("check if an integer is prime …")
-⚒ missing tool: is_prime
-  tests passed (attempt 1)
-✔ tool registered: is_prime v1
-s1 ⚙ is_prime({"n": 104729})
-s1   ↳ true
-╭─ Answer ─────────────────────────────────────────╮
-│ 104,729 is a prime number.                       │
-╰──────────────────────────────────────────────────╯
-```
+Docs: [how it works](docs/ARCHITECTURE.md) · [why it's built this way](docs/DECISIONS.md) ·
+[what went wrong along the way](docs/FAILURE_GALLERY.md) · [benchmark results](evals/results/latest.md)
 
-The next time any task needs a primality check, `is_prime` is already there.
+## Requirements
 
-## How it works
+- Python 3.12+ and [uv](https://docs.astral.sh/uv/)
+- Docker (Docker Desktop is fine) — agent-written code and shell commands run in a container
+- An API key for one OpenAI-compatible host. Default is Groq's free tier
+  (`GROQ_API_KEY` from https://console.groq.com). Ollama works with no key.
 
-```
-  task ──► PLANNER ──► human approves plan ──► TOOLSMITH builds missing tools ──► WORKERS run
-   │        (LLM)      (edit / reject → replan)   (write · test in Docker · register)   steps in waves
-   │                                                                                       │
-   │                                     risky tool call? ──► human allows / denies ◄──────┘
-   ▼
- SQLite: conversations · runs · events · approvals · tools (versioned)
-```
-
-Three LLM roles share one agent loop and differ only in prompt, tools and model:
-
-| Role | Job | Default model |
-|---|---|---|
-| Planner | task → steps with dependencies; which tools exist, which are missing | `groq:openai/gpt-oss-120b` |
-| ToolSmith | write a tool + tests, fix until the tests pass in the sandbox, register it | `groq:openai/gpt-oss-120b` |
-| Worker | complete one step with tools; can build/fix tools itself if the plan missed a gap | `groq:openai/gpt-oss-20b` |
-
-Human-in-the-loop gates: **plan approval**, **risky actions** (writing files, shell, network),
-and **clarifying questions**. A pause is a row in the `approvals` table; `sea resume` or
-`POST /runs/{id}/resume` continues the run exactly where it stopped.
-
-Full walkthrough: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Why it's built this way:
-[docs/DECISIONS.md](docs/DECISIONS.md). What went wrong along the way:
-[docs/FAILURE_GALLERY.md](docs/FAILURE_GALLERY.md).
-
-## Quickstart
-
-Requirements: Python 3.12+, [uv](https://docs.astral.sh/uv/), Docker, and an API key for any
-OpenAI-compatible host (Groq's free tier is the default).
+## Setup
 
 ```bash
 git clone https://github.com/mopatell/self-extending-agent-2 && cd self-extending-agent-2
-uv sync
-cp .env.example .env          # add GROQ_API_KEY (or point the *_MODEL vars elsewhere)
-make sandbox                  # builds the Docker image agent-written tools run in
-
-sea run "Build a tool that reverses a string, then reverse 'agent'"
-sea chat                      # multi-turn; earlier answers are remembered
-sea tools                     # what the agent has built so far
-sea runs <run_id>             # replay a run event by event
-sea serve                     # HTTP API on :8000 (SSE event stream, resume, tools)
+uv sync                      # installs into .venv
+cp .env.example .env         # then put your GROQ_API_KEY in .env
+make sandbox                 # builds the `sea-sandbox` Docker image (~1 min, once)
 ```
 
-Models are configuration, not code — any `provider:model` string works:
+Check it works:
 
 ```bash
-WORKER_MODEL=ollama:qwen2.5-coder:14b sea run "…"      # local
-PLANNER_MODEL=anthropic:claude-opus-5 sea run "…"      # uv sync --extra anthropic
+uv run sea run "Reverse the string 'agent' and tell me the result"
 ```
 
-## What makes it production-shaped
+## Running tasks
 
-- **Generated code never runs on the host.** Tests *and* calls execute in a locked-down
-  container (no network, non-root, memory/pid limits). `run_shell` too.
-- **Tools are versioned rows in SQL** with provenance, tests, call and failure counts. Editing a
-  tool re-runs the previous version's tests. Name collisions are rejected.
-- **Static validation before any test runs:** JSON-Schema validity, function-signature-matches-
-  schema, dependency allowlist, forbidden imports (`subprocess`, `socket`, …), forbidden calls
-  (`eval`, `os.system`, …), network use must be declared.
-- **Everything is an event.** CLI rendering, the SSE API, `sea runs` replay and the evals all read
-  the same append-only stream.
-- **Pause / resume is one code path.** A human decision is keyed by stable ids; resuming re-enters
-  the run with the decision pre-filled. Works for plan approval, tool approval and questions,
-  including inside a parallel wave.
-- **Failure isolation:** a failed step blocks only the steps that depend on it; a failed tool
-  build is reported to the worker rather than killing the run; a malformed tool call from the
-  model is fed back as a hint.
-- **Testable without a network.** `FakeProvider` scripts model replies, so the loop, planner,
-  toolsmith, orchestrator, CLI and API are all covered by fast unit tests (`make test`, ~2 s).
-- **Free-tier aware:** capped concurrent LLM calls, compact tool catalogue in prompts, capped
-  tool-result size, tokens recorded per run.
+```bash
+uv run sea run "Is 104729 a prime number?"                # one task, interactive approvals
+uv run sea run -c myproject "..."                         # named conversation = its own workspace
+uv run sea chat                                           # multi-turn; earlier answers remembered
+AUTO_APPROVE=all uv run sea run "..."                     # no prompts (approves plans and tool calls)
+```
 
-## Evals
+Files the agent reads and writes live in `workspaces/<conversation-id>/`. Put input files there
+(e.g. `workspaces/myproject/sales.csv`) and refer to them by name in the task.
 
-`make eval` runs 19 tasks against real models and the real sandbox — v1's benchmark
-(use existing tools / build new / fix buggy / refuse the impossible) plus multi-step, parallel,
-human-in-the-loop and allowlisted-package tasks. Checks look at events, files and registry rows,
-not just the answer text. Latest results: [evals/results/latest.md](evals/results/latest.md).
+What a run looks like:
+
+```
+▶ task: Is 104729 a prime number?
+              Proposed plan
+┃ id ┃ step                              ┃ after ┃ needs ┃
+│ s1 │ Check whether 104729 is prime     │ -     │ + build: is_prime │
+Plan: (a)pprove, (e)dit a step, (r)eject [a/e/r] (a):
+⚒ missing tool: is_prime
+  tests passed (attempt 1)
+✔ tool registered: is_prime v1
+s1 ● step: Check whether 104729 is prime
+s1 ⚙ is_prime({"n": 104729})
+s1   ↳ true
+╭─ Answer ────────────────────────────╮
+│ 104,729 is a prime number.          │
+╰─────────────────────────────────────╯
+run 51776e260e21 · 4088↑ 886↓ tokens
+```
+
+You will be asked to approve: the plan (always), and any tool call that writes files, runs a
+shell command or uses the network. Pure/read-only tools and agent-written pure tools run without
+asking. Destructive shell commands (`rm -rf`, `sudo`, …) are refused outright.
+
+Other commands:
+
+```bash
+uv run sea tools                 # tools the agent has built (version, calls, failures)
+uv run sea tools is_prime        # source and tests of one tool
+uv run sea runs                  # recent runs
+uv run sea runs <run_id>         # replay a run event by event
+uv run sea approvals             # runs waiting on a human
+uv run sea resume <run_id>       # answer what a paused run is waiting for
+uv run sea cancel <run_id>
+uv run sea run --detached "..."  # never prompt; pause instead (what the API does)
+uv run sea serve                 # HTTP API on http://127.0.0.1:8000  (docs at /docs)
+```
+
+API in three calls:
+
+```bash
+CID=$(curl -s -X POST localhost:8000/conversations | jq -r .id)
+RID=$(curl -s -X POST localhost:8000/conversations/$CID/runs -H 'content-type: application/json' \
+      -d '{"task":"Is 7919 prime?"}' | jq -r .run_id)
+curl -N localhost:8000/runs/$RID/events            # SSE: replays, then follows the run until it ends or pauses
+curl -s localhost:8000/runs/$RID | jq .pending_approvals
+curl -X POST localhost:8000/runs/$RID/resume -H 'content-type: application/json' \
+     -d '{"approval_id":"<id>","decision":{"approved":true}}'
+```
+
+## Configuration (`.env`)
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PLANNER_MODEL`, `TOOLSMITH_MODEL` | `groq:openai/gpt-oss-120b` | `provider:model`; providers: `groq`, `ollama`, `openrouter`, `openai`, `anthropic` |
+| `WORKER_MODEL` | `groq:openai/gpt-oss-20b` | cheaper model for step execution |
+| `AUTO_APPROVE` | `none` | `safe` = auto-approve plans; `all` = plans and risky tool calls too |
+| `MAX_CONCURRENT_LLM_CALLS` | `2` | keep low on free tiers |
+| `MAX_PARALLEL_STEPS` | `2` | steps run at once inside a wave |
+| `MAX_LOOP_STEPS` | `12` | tool-call turns per step before the worker is forced to answer |
+| `SANDBOX` | `docker` | `local` runs agent code on the host — dev only, unsafe |
+| `DB_PATH`, `WORKSPACES_DIR` | `data/sea.db`, `workspaces` | where things are stored |
+
+Anthropic models need `uv sync --extra anthropic` and `ANTHROPIC_API_KEY`.
+
+## Testing
+
+```bash
+make test          # 78 unit/integration tests, no network, no Docker  (~3 s)
+make test-docker   # 4 tests against the sandbox image                (~5 s)
+make lint
+make eval          # the 19-task benchmark against real models        (~15 min, ~150k tokens)
+```
+
+`make test` covers the whole runtime — loop, planner, toolsmith, orchestrator, pause/resume,
+CLI, API — using `FakeProvider` (scripted model replies) and a temp SQLite. If it passes, the
+system is wired correctly; only model quality is untested.
+
+`make eval` is the real thing. Expect **≈16–18 of 19** to pass with the default Groq models
+(see [latest results](evals/results/latest.md)); the ones that fail are usually the model
+choosing a one-step plan for a task that should be parallel, or a provider-side output error.
+Each task gets a fresh DB and workspace; results are written to `evals/results/`. Groq's free
+tier allows roughly one full run per day per model — if it stops with `rate_limit_exceeded`,
+re-run the rest later with `uv run python -m evals.run_evals --merge <task ids>`.
+
+## What to expect
+
+- **Simple tasks**: 3–5k tokens, under 10 s.
+- **Tasks that need a new tool**: 7–10k tokens, 30–60 s; the tool is built, tested and reused by
+  later runs (`sea tools`).
+- **Multi-step / pandas tasks**: 10–25k tokens, 1–2 min.
+- Tool builds fail sometimes; the ToolSmith gets three attempts with the test output fed back,
+  and a failed build is reported to the worker, which can retry or work around it.
+- A run can end in `failed` when every step fails (e.g. the model exhausted its tool-call budget)
+  — `sea runs <id>` shows exactly what happened.
+
+## Troubleshooting
+
+| Symptom | Cause / fix |
+|---|---|
+| `Docker not found` / `Cannot connect to the Docker daemon` | start Docker Desktop, or `SANDBOX=local` for a quick look (unsafe) |
+| `model ... does not exist` (404) | free-tier catalogues change; `curl https://api.groq.com/openai/v1/models` and update `.env` |
+| `rate_limit_exceeded ... tokens per day` | that model's daily budget is spent; switch `WORKER_MODEL` (e.g. `groq:qwen/qwen3.8-27b`) or wait |
+| run hangs at a prompt when scripted | pipes have no TTY, so use `--detached` (pauses) or `AUTO_APPROVE=all` |
+| `GROQ_API_KEY is not set` | `.env` is read from the current directory; run from the repo root |
 
 ## Layout
 
@@ -114,17 +157,11 @@ src/sea/
   tools/      base.py  builtin.py  registry.py
   sandbox/    Dockerfile  allowlist.py  runner.py
   migrations/ 001_init.sql
-tests/        unit + integration (FakeProvider, in-memory SQLite); tests marked `docker` need the image
-evals/        tasks.py  run_evals.py  results/
-docs/         ARCHITECTURE.md  DECISIONS.md  FAILURE_GALLERY.md
+tests/   evals/   docs/   data/ (db + mirrored tool sources)   workspaces/ (per conversation)
 ```
 
-Dependencies: `openai` (one adapter for every OpenAI-compatible host), `pydantic`, `fastapi`,
-`uvicorn`, `jsonschema`, `rich`, `python-dotenv`. Nothing else.
+Dependencies: `openai`, `pydantic`, `fastapi`, `uvicorn`, `jsonschema`, `rich`, `python-dotenv`.
 
-## Lineage
-
-This is a rebuild of [self-extending-agent](https://github.com/mopatell/self-extending-agent)
-(v1), which proved the core idea — write a missing tool, test it, use it — and documented what a
-real version would need: sandboxed *execution* (not just testing), persistence, human approval,
-multi-agent planning, resumability. v2 is those things.
+Rebuilt from [self-extending-agent](https://github.com/mopatell/self-extending-agent) (v1), which
+proved the idea and listed what a real version needed: sandboxed execution, persistence, human
+approval, planning, resumability.
