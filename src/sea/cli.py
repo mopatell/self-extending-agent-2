@@ -282,13 +282,19 @@ def cmd_desktop(args: argparse.Namespace) -> None:
     if not (desktop / "package.json").exists():
         console.print("[red]desktop/ not found; run from the repository checkout[/]")
         sys.exit(1)
-    if shutil.which("pnpm") is None or shutil.which("cargo") is None:
-        console.print("[red]needs pnpm and cargo on PATH (see README → Desktop app)[/]")
+    # rustup installs to ~/.cargo/bin; shells opened before the install don't have it on PATH yet.
+    env = {**os.environ, "SEA_ROOT": str(desktop.parent)}
+    cargo_bin = Path.home() / ".cargo" / "bin"
+    if cargo_bin.exists() and str(cargo_bin) not in env["PATH"]:
+        env["PATH"] = f"{cargo_bin}:{env['PATH']}"
+    missing = [t for t in ("pnpm", "cargo") if shutil.which(t, path=env["PATH"]) is None]
+    if missing:
+        console.print(f"[red]needs {' and '.join(missing)} on PATH (see README → Desktop app)[/]")
         sys.exit(1)
     if not (desktop / "node_modules").exists():
-        subprocess.run(["pnpm", "install"], cwd=desktop, check=True)
+        subprocess.run(["pnpm", "install"], cwd=desktop, check=True, env=env)
     cmd = ["pnpm", "tauri", "build"] if args.build else ["pnpm", "tauri", "dev"]
-    sys.exit(subprocess.call(cmd, cwd=desktop, env={**os.environ, "SEA_ROOT": str(desktop.parent)}))
+    sys.exit(subprocess.call(cmd, cwd=desktop, env=env))
 
 
 def cmd_cancel(args: argparse.Namespace) -> None:
