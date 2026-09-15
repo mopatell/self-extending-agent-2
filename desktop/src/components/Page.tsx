@@ -24,6 +24,9 @@ export function Page({ id }: { id: string }) {
       <div className="flex-1 overflow-x-hidden overflow-y-auto">
         <div className="mx-auto max-w-[760px] min-w-0 px-12 pt-16 pb-6">
           <Title id={id} title={page.title} />
+          <div className="mt-1 text-[12px] text-faint select-text">
+            files for this page: <code className="!bg-transparent !p-0 !text-faint">workspaces/{id}/</code>
+          </div>
           {loading && <div className="mt-8 text-faint">loading…</div>}
           {!loading && runs.length === 0 && (
             <div className="mt-8 text-[15px] text-faint">
