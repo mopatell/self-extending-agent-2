@@ -72,7 +72,31 @@ class DB:
         return self._one("SELECT * FROM conversations WHERE id = ?", (cid,))
 
     def list_conversations(self, limit: int = 50) -> list[dict[str, Any]]:
-        return self._all("SELECT * FROM conversations ORDER BY created_at DESC LIMIT ?", (limit,))
+        """Conversations with a summary of their latest run, most recently active first."""
+        return self._all(
+            """SELECT c.id, c.title, c.created_at,
+                      COALESCE(r.updated_at, c.created_at) AS updated_at,
+                      r.task AS last_task, r.status AS last_status,
+                      (SELECT COUNT(*) FROM runs WHERE conversation_id = c.id) AS run_count
+               FROM conversations c
+               LEFT JOIN runs r ON r.id = (
+                   SELECT id FROM runs WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1)
+               ORDER BY updated_at DESC LIMIT ?""",
+            (limit,),
+        )
+
+    def rename_conversation(self, cid: str, title: str) -> None:
+        self.conn.execute("UPDATE conversations SET title = ? WHERE id = ?", (title, cid))
+
+    def delete_conversation(self, cid: str) -> None:
+        with self.conn:
+            run_ids = [r["id"] for r in self._all("SELECT id FROM runs WHERE conversation_id = ?", (cid,))]
+            for rid in run_ids:
+                self.conn.execute("DELETE FROM events WHERE run_id = ?", (rid,))
+                self.conn.execute("DELETE FROM approvals WHERE run_id = ?", (rid,))
+            self.conn.execute("DELETE FROM runs WHERE conversation_id = ?", (cid,))
+            self.conn.execute("DELETE FROM messages WHERE conversation_id = ?", (cid,))
+            self.conn.execute("DELETE FROM conversations WHERE id = ?", (cid,))
 
     def add_message(self, cid: str, role: str, content: str) -> None:
         self.conn.execute(
@@ -96,10 +120,14 @@ class DB:
             run["state"] = json.loads(run["state_json"]) if run["state_json"] else None
         return run
 
-    def list_runs(self, cid: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+    def list_runs(
+        self, cid: str | None = None, limit: int = 50, oldest_first: bool = False
+    ) -> list[dict[str, Any]]:
+        order = "ASC" if oldest_first else "DESC"
         if cid:
             return self._all(
-                "SELECT * FROM runs WHERE conversation_id = ? ORDER BY created_at DESC LIMIT ?", (cid, limit)
+                f"SELECT * FROM runs WHERE conversation_id = ? ORDER BY created_at {order} LIMIT ?",
+                (cid, limit),
             )
         return self._all("SELECT * FROM runs ORDER BY created_at DESC LIMIT ?", (limit,))
 
@@ -161,6 +189,15 @@ class DB:
     def pending_approvals(self, rid: str) -> list[dict[str, Any]]:
         rows = self._all(
             "SELECT * FROM approvals WHERE run_id = ? AND status = 'pending' ORDER BY created_at", (rid,)
+        )
+        for a in rows:
+            a["payload"] = json.loads(a.pop("payload_json"))
+        return rows
+
+    def all_pending_approvals(self) -> list[dict[str, Any]]:
+        rows = self._all(
+            """SELECT a.*, r.task, r.conversation_id FROM approvals a JOIN runs r ON r.id = a.run_id
+               WHERE a.status = 'pending' ORDER BY a.created_at"""
         )
         for a in rows:
             a["payload"] = json.loads(a.pop("payload_json"))

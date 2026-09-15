@@ -248,23 +248,36 @@ def cmd_chat(args: argparse.Namespace) -> None:
 def cmd_serve(args: argparse.Namespace) -> None:
     import uvicorn
 
+    if args.watch_parent:
+        _exit_with_parent(args.watch_parent)
     uvicorn.run("sea.api:app", host=args.host, port=args.port, reload=False)
+
+
+def _exit_with_parent(pid: int) -> None:
+    """Exit when the process that started us (the desktop app) is gone, however it died."""
+    import os
+    import threading
+    import time
+
+    def watch() -> None:
+        while True:
+            time.sleep(2)
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                os._exit(0)
+
+    threading.Thread(target=watch, daemon=True).start()
 
 
 def cmd_cancel(args: argparse.Namespace) -> None:
     db = DB()
-    run = db.get_run(args.run_id)
-    if not run:
-        console.print("[red]no such run[/]")
+    try:
+        _orchestrator(db, False).cancel(args.run_id)
+    except ValueError as e:
+        console.print(f"[red]{e}[/]")
         sys.exit(1)
-    if run["status"] in ("completed", "failed", "cancelled"):
-        console.print(f"[red]run is already {run['status']}[/]")
-        sys.exit(1)
-    for a in db.pending_approvals(args.run_id):
-        db.resolve_approval(a["id"], "denied", {"approved": False, "reason": "run cancelled"})
-    db.update_run(args.run_id, status="cancelled")
-    Emitter(db, args.run_id, []).emit("run_failed", error="cancelled by user")
-    console.print(f"[dim]run {run['id']} → cancelled[/]")
+    console.print(f"[dim]run {args.run_id} → cancelled[/]")
 
 
 def cmd_approvals(args: argparse.Namespace) -> None:
@@ -347,6 +360,7 @@ def main(argv: list[str] | None = None) -> None:
     p = sub.add_parser("serve", help="start the HTTP API")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8000)
+    p.add_argument("--watch-parent", type=int, metavar="PID", help="exit when this process dies")
     p.set_defaults(fn=cmd_serve)
 
     p = sub.add_parser("resume", help="answer a pending approval and continue a paused run")

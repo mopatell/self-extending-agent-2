@@ -93,6 +93,18 @@ class Orchestrator:
         _restore(state)
         return await self._drive(run_id, state, emitter, prefilled={approval["payload"]["key"]: decision})
 
+    def cancel(self, run_id: str) -> dict[str, Any]:
+        run = self.db.get_run(run_id)
+        if not run:
+            raise ValueError("unknown run")
+        if run["status"] in ("completed", "failed", "cancelled"):
+            raise ValueError(f"run is already {run['status']}")
+        for a in self.db.pending_approvals(run_id):
+            self.db.resolve_approval(a["id"], "denied", {"approved": False, "reason": "run cancelled"})
+        self.db.update_run(run_id, status="cancelled")
+        Emitter(self.db, run_id, self.listeners).emit("run_failed", error="cancelled by user")
+        return self.db.get_run(run_id)
+
     # ------------------------------------------------------------------ driver
 
     async def _drive(
