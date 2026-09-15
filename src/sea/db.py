@@ -1,13 +1,16 @@
 """SQLite storage. One small class, plain SQL, no ORM.
 
 Calls are synchronous: SQLite writes take microseconds, so wrapping them in
-threads would add more complexity than it removes for this project.
+threads would add more complexity than it removes for this project. One
+connection is shared, guarded by a lock: concurrent use of a sqlite3
+connection from two threads can crash the interpreter, not just raise.
 """
 
 from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import uuid
 from pathlib import Path
 from typing import Any
@@ -37,6 +40,7 @@ class DB:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.execute("PRAGMA busy_timeout=5000")
+        self.lock = threading.RLock()
         self._migrate()
 
     def _migrate(self) -> None:
@@ -45,7 +49,7 @@ class DB:
         for sql_file in sorted(MIGRATIONS_DIR.glob("*.sql")):
             if sql_file.name in applied:
                 continue
-            with self.conn:
+            with self.lock, self.conn:
                 self.conn.executescript(sql_file.read_text())
                 self.conn.execute("INSERT INTO schema_migrations VALUES (?)", (sql_file.name,))
 
@@ -54,18 +58,24 @@ class DB:
 
     # ----------------------------------------------------------------- helpers
 
+    def _exec(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
+        with self.lock:
+            return self.conn.execute(sql, params)
+
     def _one(self, sql: str, params: tuple = ()) -> dict[str, Any] | None:
-        row = self.conn.execute(sql, params).fetchone()
+        with self.lock:
+            row = self.conn.execute(sql, params).fetchone()
         return dict(row) if row else None
 
     def _all(self, sql: str, params: tuple = ()) -> list[dict[str, Any]]:
-        return [dict(r) for r in self.conn.execute(sql, params).fetchall()]
+        with self.lock:
+            return [dict(r) for r in self.conn.execute(sql, params).fetchall()]
 
     # ----------------------------------------------------------------- conversations
 
     def create_conversation(self, title: str = "", cid: str | None = None) -> str:
         cid = cid or new_id()
-        self.conn.execute("INSERT OR IGNORE INTO conversations (id, title) VALUES (?, ?)", (cid, title))
+        self._exec("INSERT OR IGNORE INTO conversations (id, title) VALUES (?, ?)", (cid, title))
         return cid
 
     def get_conversation(self, cid: str) -> dict[str, Any] | None:
@@ -86,20 +96,20 @@ class DB:
         )
 
     def rename_conversation(self, cid: str, title: str) -> None:
-        self.conn.execute("UPDATE conversations SET title = ? WHERE id = ?", (title, cid))
+        self._exec("UPDATE conversations SET title = ? WHERE id = ?", (title, cid))
 
     def delete_conversation(self, cid: str) -> None:
-        with self.conn:
+        with self.lock, self.conn:
             run_ids = [r["id"] for r in self._all("SELECT id FROM runs WHERE conversation_id = ?", (cid,))]
             for rid in run_ids:
-                self.conn.execute("DELETE FROM events WHERE run_id = ?", (rid,))
-                self.conn.execute("DELETE FROM approvals WHERE run_id = ?", (rid,))
-            self.conn.execute("DELETE FROM runs WHERE conversation_id = ?", (cid,))
-            self.conn.execute("DELETE FROM messages WHERE conversation_id = ?", (cid,))
-            self.conn.execute("DELETE FROM conversations WHERE id = ?", (cid,))
+                self._exec("DELETE FROM events WHERE run_id = ?", (rid,))
+                self._exec("DELETE FROM approvals WHERE run_id = ?", (rid,))
+            self._exec("DELETE FROM runs WHERE conversation_id = ?", (cid,))
+            self._exec("DELETE FROM messages WHERE conversation_id = ?", (cid,))
+            self._exec("DELETE FROM conversations WHERE id = ?", (cid,))
 
     def add_message(self, cid: str, role: str, content: str) -> None:
-        self.conn.execute(
+        self._exec(
             "INSERT INTO messages (conversation_id, role, content) VALUES (?, ?, ?)", (cid, role, content)
         )
 
@@ -110,7 +120,7 @@ class DB:
 
     def create_run(self, cid: str, task: str) -> str:
         rid = new_id()
-        self.conn.execute("INSERT INTO runs (id, conversation_id, task) VALUES (?, ?, ?)", (rid, cid, task))
+        self._exec("INSERT INTO runs (id, conversation_id, task) VALUES (?, ?, ?)", (rid, cid, task))
         return rid
 
     def get_run(self, rid: str) -> dict[str, Any] | None:
@@ -139,10 +149,10 @@ class DB:
             fields["state_json"] = json.dumps(fields.pop("state"))
         fields["updated_at"] = _now()
         cols = ", ".join(f"{k} = ?" for k in fields)
-        self.conn.execute(f"UPDATE runs SET {cols} WHERE id = ?", (*fields.values(), rid))
+        self._exec(f"UPDATE runs SET {cols} WHERE id = ?", (*fields.values(), rid))
 
     def add_usage(self, rid: str, tokens_in: int, tokens_out: int) -> None:
-        self.conn.execute(
+        self._exec(
             "UPDATE runs SET tokens_in = tokens_in + ?, tokens_out = tokens_out + ? WHERE id = ?",
             (tokens_in, tokens_out, rid),
         )
@@ -150,10 +160,10 @@ class DB:
     # ----------------------------------------------------------------- events
 
     def add_event(self, rid: str, type_: str, payload: dict[str, Any]) -> int:
-        seq = self.conn.execute(
-            "SELECT COALESCE(MAX(seq), 0) + 1 FROM events WHERE run_id = ?", (rid,)
-        ).fetchone()[0]
-        self.conn.execute(
+        seq = self._exec("SELECT COALESCE(MAX(seq), 0) + 1 FROM events WHERE run_id = ?", (rid,)).fetchone()[
+            0
+        ]
+        self._exec(
             "INSERT INTO events (run_id, seq, type, payload_json) VALUES (?, ?, ?, ?)",
             (rid, seq, type_, json.dumps(payload, default=str)),
         )
@@ -173,7 +183,7 @@ class DB:
 
     def create_approval(self, rid: str, kind: str, payload: dict[str, Any]) -> str:
         aid = new_id()
-        self.conn.execute(
+        self._exec(
             "INSERT INTO approvals (id, run_id, kind, payload_json) VALUES (?, ?, ?, ?)",
             (aid, rid, kind, json.dumps(payload, default=str)),
         )
@@ -204,7 +214,7 @@ class DB:
         return rows
 
     def resolve_approval(self, aid: str, status: str, decision: dict[str, Any]) -> None:
-        self.conn.execute(
+        self._exec(
             "UPDATE approvals SET status = ?, decision_json = ?, resolved_at = ? WHERE id = ?",
             (status, json.dumps(decision), _now(), aid),
         )
@@ -212,7 +222,7 @@ class DB:
     # ----------------------------------------------------------------- tools
 
     def insert_tool(self, **t: Any) -> None:
-        self.conn.execute(
+        self._exec(
             """INSERT INTO tools (name, version, description, input_schema_json, source, test_code,
                                   deps_json, risk, created_by_run)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -243,10 +253,10 @@ class DB:
         return [self._tool_row(r) for r in rows]
 
     def set_tool_status(self, name: str, status: str) -> None:
-        self.conn.execute("UPDATE tools SET status = ? WHERE name = ?", (status, name))
+        self._exec("UPDATE tools SET status = ? WHERE name = ?", (status, name))
 
     def record_tool_call(self, name: str, version: int, failed: bool) -> None:
-        self.conn.execute(
+        self._exec(
             "UPDATE tools SET calls = calls + 1, failures = failures + ? WHERE name = ? AND version = ?",
             (1 if failed else 0, name, version),
         )

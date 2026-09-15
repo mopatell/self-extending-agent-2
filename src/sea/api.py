@@ -65,6 +65,8 @@ def create_app(db: DB | None = None, orchestrator: Orchestrator | None = None) -
         for t in tasks:
             t.cancel()
 
+    # Every handler is `async def` on purpose: sync handlers would run in a thread pool and the
+    # shared sqlite connection must be used from one thread (see db.py).
     app = FastAPI(title="sea", lifespan=lifespan)
     app.add_middleware(CORSMiddleware, allow_origins=ORIGINS, allow_methods=["*"], allow_headers=["*"])
 
@@ -86,7 +88,7 @@ def create_app(db: DB | None = None, orchestrator: Orchestrator | None = None) -
         return conv
 
     @app.get("/health")
-    def health() -> dict[str, Any]:
+    async def health() -> dict[str, Any]:
         from importlib.metadata import version
 
         return {
@@ -98,31 +100,31 @@ def create_app(db: DB | None = None, orchestrator: Orchestrator | None = None) -
     # ------------------------------------------------------------ conversations
 
     @app.post("/conversations", status_code=201)
-    def create_conversation(title: str = "") -> dict[str, str]:
+    async def create_conversation(title: str = "") -> dict[str, str]:
         return {"id": app.state.db.create_conversation(title)}
 
     @app.get("/conversations")
-    def list_conversations() -> list[dict[str, Any]]:
+    async def list_conversations() -> list[dict[str, Any]]:
         return app.state.db.list_conversations()
 
     @app.patch("/conversations/{cid}")
-    def rename_conversation(cid: str, body: TitleIn) -> dict[str, Any]:
+    async def rename_conversation(cid: str, body: TitleIn) -> dict[str, Any]:
         get_conversation_or_404(cid)
         app.state.db.rename_conversation(cid, body.title.strip())
         return app.state.db.get_conversation(cid)
 
     @app.delete("/conversations/{cid}", status_code=204)
-    def delete_conversation(cid: str) -> None:
+    async def delete_conversation(cid: str) -> None:
         get_conversation_or_404(cid)
         app.state.db.delete_conversation(cid)
 
     @app.get("/conversations/{cid}/runs")
-    def conversation_runs(cid: str) -> list[dict[str, Any]]:
+    async def conversation_runs(cid: str) -> list[dict[str, Any]]:
         get_conversation_or_404(cid)
         return app.state.db.list_runs(cid, limit=200, oldest_first=True)
 
     @app.get("/conversations/{cid}/messages")
-    def messages(cid: str) -> list[dict[str, Any]]:
+    async def messages(cid: str) -> list[dict[str, Any]]:
         get_conversation_or_404(cid)
         return app.state.db.get_messages(cid)
 
@@ -138,11 +140,11 @@ def create_app(db: DB | None = None, orchestrator: Orchestrator | None = None) -
     # ------------------------------------------------------------ runs
 
     @app.get("/runs")
-    def list_runs(limit: int = 20) -> list[dict[str, Any]]:
+    async def list_runs(limit: int = 20) -> list[dict[str, Any]]:
         return app.state.db.list_runs(limit=limit)
 
     @app.get("/runs/{run_id}")
-    def get_run(run_id: str) -> dict[str, Any]:
+    async def get_run(run_id: str) -> dict[str, Any]:
         run = get_run_or_404(run_id)
         run["pending_approvals"] = app.state.db.pending_approvals(run_id)
         return run
@@ -161,7 +163,7 @@ def create_app(db: DB | None = None, orchestrator: Orchestrator | None = None) -
         return {"run_id": run_id, "status": "resuming"}
 
     @app.post("/runs/{run_id}/cancel")
-    def cancel(run_id: str) -> dict[str, Any]:
+    async def cancel(run_id: str) -> dict[str, Any]:
         get_run_or_404(run_id)
         try:
             return app.state.orchestrator.cancel(run_id)
@@ -169,7 +171,7 @@ def create_app(db: DB | None = None, orchestrator: Orchestrator | None = None) -
             raise HTTPException(409, str(e)) from e
 
     @app.get("/approvals")
-    def approvals() -> list[dict[str, Any]]:
+    async def approvals() -> list[dict[str, Any]]:
         return app.state.db.all_pending_approvals()
 
     @app.get("/runs/{run_id}/events")
@@ -180,14 +182,14 @@ def create_app(db: DB | None = None, orchestrator: Orchestrator | None = None) -
     # ------------------------------------------------------------ tools
 
     @app.get("/tools")
-    def list_tools() -> list[dict[str, Any]]:
+    async def list_tools() -> list[dict[str, Any]]:
         return [
             {k: v for k, v in t.items() if k not in ("source", "test_code")}
             for t in app.state.db.active_tools()
         ]
 
     @app.get("/tools/{name}")
-    def get_tool(name: str) -> dict[str, Any]:
+    async def get_tool(name: str) -> dict[str, Any]:
         tool = app.state.db.latest_tool(name)
         if not tool:
             raise HTTPException(404, "no such tool")
@@ -195,7 +197,7 @@ def create_app(db: DB | None = None, orchestrator: Orchestrator | None = None) -
 
     @app.post("/tools/{name}/deprecate")
     @app.post("/tools/{name}/restore")
-    def set_tool_status(name: str, request: Request) -> dict[str, Any]:
+    async def set_tool_status(name: str, request: Request) -> dict[str, Any]:
         if not app.state.db.latest_tool(name):
             raise HTTPException(404, "no such tool")
         status = "deprecated" if request.url.path.endswith("/deprecate") else "active"
@@ -205,11 +207,11 @@ def create_app(db: DB | None = None, orchestrator: Orchestrator | None = None) -
     # ------------------------------------------------------------ settings
 
     @app.get("/settings")
-    def get_settings() -> list[dict[str, str]]:
+    async def get_settings() -> list[dict[str, str]]:
         return config.read_settings()
 
     @app.put("/settings")
-    def put_settings(body: dict[str, str]) -> list[dict[str, str]]:
+    async def put_settings(body: dict[str, str]) -> list[dict[str, str]]:
         try:
             config.write_settings(body)
         except ValueError as e:

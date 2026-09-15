@@ -92,6 +92,27 @@ curl -X POST localhost:8000/runs/$RID/resume -H 'content-type: application/json'
      -d '{"approval_id":"<id>","decision":{"approved":true}}'
 ```
 
+## Desktop app
+
+![sea desktop](docs/img/desktop-light.png)
+
+A native window (Tauri) over the same engine, styled like Notion: pages in a sidebar, each page
+a conversation whose runs render as blocks — plan, tool builds, steps with every tool call,
+approvals inline, the answer. Tools library and Settings (models, keys, limits) are in the app
+too, so nothing needs the terminal.
+
+Extra requirements: [Rust](https://rustup.rs) and [pnpm](https://pnpm.io) (Node 22+).
+
+```bash
+make desktop          # or: uv run sea desktop
+```
+
+The app starts `sea serve --port 8765` itself and stops it when you quit. First launch compiles
+the Rust shell (~1–3 min); after that it opens in seconds. `make desktop-build` produces a
+distributable bundle under `desktop/src-tauri/target/release/bundle/`.
+
+Shortcuts: `⌘N` new page · `⌘K` focus the composer · `Enter` send · `Shift+Enter` newline.
+
 ## Configuration (`.env`)
 
 | Variable | Default | Meaning |

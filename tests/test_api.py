@@ -222,3 +222,28 @@ async def test_settings_round_trip(client, tmp_path, monkeypatch):
     r = await client.put("/settings", json={"GROQ_API_KEY": "sk-brand-new-9999"})
     assert "GROQ_API_KEY=sk-brand-new-9999" in env.read_text()
     assert {s["key"]: s for s in r.json()}["GROQ_API_KEY"]["value"] == "••••9999"
+
+
+async def test_concurrent_requests_share_one_connection_safely(client, db):
+    """The desktop UI fires several requests at once; a sqlite connection used from two threads
+    at the same time can crash the interpreter, so handlers must stay on the event loop."""
+    for i in range(5):
+        db.create_conversation(f"c{i}")
+    results = await asyncio.gather(
+        *[client.get("/conversations") for _ in range(10)],
+        *[client.get("/approvals") for _ in range(10)],
+        *[client.get("/tools") for _ in range(10)],
+    )
+    assert all(r.status_code == 200 for r in results)
+    import inspect
+
+    from sea import api
+
+    app = api.create_app(db=db)
+    handlers = [
+        r.endpoint
+        for r in app.routes
+        if hasattr(r, "endpoint")
+        and r.path.startswith(("/conv", "/runs", "/tools", "/set", "/appr", "/health"))
+    ]
+    assert handlers and all(inspect.iscoroutinefunction(h) for h in handlers)

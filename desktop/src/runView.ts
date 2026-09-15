@@ -163,7 +163,10 @@ export function apply(view: RunView, e: Event): RunView {
       break;
     case "tool_called": {
       const s = step(p.step_id);
-      s.calls = [...s.calls, { callId: p.call_id, name: p.name, args: p.arguments ?? {}, pending: true }];
+      // A call that paused for approval is announced again after resume; keep one row.
+      if (!s.calls.some((c) => c.callId === p.call_id)) {
+        s.calls = [...s.calls, { callId: p.call_id, name: p.name, args: p.arguments ?? {}, pending: true }];
+      }
       break;
     }
     case "tool_result": {

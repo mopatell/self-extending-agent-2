@@ -12,6 +12,7 @@ type State = {
   pages: Page[];
   view: View;
   pendingCount: number;
+  pendingPage: string | null;
   theme: Theme;
   toast: { text: string; kind: "error" | "info" } | null;
 };
@@ -20,9 +21,10 @@ let state: State = {
   engine: "starting",
   version: "",
   pages: [],
-  view: { kind: "page", id: "" },
+  view: location.hash === "#tools" ? { kind: "tools" } : location.hash === "#settings" ? { kind: "settings" } : { kind: "page", id: "" },
   pendingCount: 0,
-  theme: (localStorage.getItem("theme") as Theme) || "system",
+  pendingPage: null,
+  theme: (new URLSearchParams(location.search).get("theme") as Theme) || (localStorage.getItem("theme") as Theme) || "system",
   toast: null,
 };
 const listeners = new Set<() => void>();
@@ -77,9 +79,11 @@ export function open(view: View) {
   set({ view });
 }
 
+/** Sidebar freshness: pending badge and page list/status dots. Polled while the app is open. */
 export async function refreshPending() {
   try {
-    set({ pendingCount: (await api.approvals()).length });
+    const [pending, pages] = await Promise.all([api.approvals(), api.pages()]);
+    set({ pendingCount: pending.length, pendingPage: pending[0]?.conversation_id ?? null, pages });
   } catch {
     /* engine down; the health poll will notice */
   }

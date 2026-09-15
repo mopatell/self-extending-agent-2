@@ -28,3 +28,22 @@ jobs:
       - run: uv sync
       - run: docker build -t sea-sandbox src/sea/sandbox
       - run: uv run pytest -q -m docker
+
+  desktop:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: desktop/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: desktop
+      - run: pnpm test
+        working-directory: desktop
+      - run: pnpm build          # tsc --noEmit + vite build; the Rust shell is built locally, not in CI
+        working-directory: desktop

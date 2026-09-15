@@ -264,10 +264,31 @@ def _exit_with_parent(pid: int) -> None:
             time.sleep(2)
             try:
                 os.kill(pid, 0)
-            except OSError:
+            except OSError as e:
+                print(f"sea serve: parent process {pid} is gone ({e}); exiting", flush=True)
                 os._exit(0)
 
     threading.Thread(target=watch, daemon=True).start()
+
+
+def cmd_desktop(args: argparse.Namespace) -> None:
+    """Launch the desktop app (Tauri dev mode from the repo). Needs Rust, Node and pnpm."""
+    import os
+    import shutil
+    import subprocess
+    from pathlib import Path
+
+    desktop = Path(__file__).resolve().parents[2] / "desktop"
+    if not (desktop / "package.json").exists():
+        console.print("[red]desktop/ not found; run from the repository checkout[/]")
+        sys.exit(1)
+    if shutil.which("pnpm") is None or shutil.which("cargo") is None:
+        console.print("[red]needs pnpm and cargo on PATH (see README → Desktop app)[/]")
+        sys.exit(1)
+    if not (desktop / "node_modules").exists():
+        subprocess.run(["pnpm", "install"], cwd=desktop, check=True)
+    cmd = ["pnpm", "tauri", "build"] if args.build else ["pnpm", "tauri", "dev"]
+    sys.exit(subprocess.call(cmd, cwd=desktop, env={**os.environ, "SEA_ROOT": str(desktop.parent)}))
 
 
 def cmd_cancel(args: argparse.Namespace) -> None:
@@ -362,6 +383,10 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--port", type=int, default=8000)
     p.add_argument("--watch-parent", type=int, metavar="PID", help="exit when this process dies")
     p.set_defaults(fn=cmd_serve)
+
+    p = sub.add_parser("desktop", help="open the desktop app")
+    p.add_argument("--build", action="store_true", help="build a distributable instead of running")
+    p.set_defaults(fn=cmd_desktop)
 
     p = sub.add_parser("resume", help="answer a pending approval and continue a paused run")
     p.add_argument("run_id")

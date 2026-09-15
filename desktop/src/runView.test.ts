@@ -68,11 +68,13 @@ describe("fold", () => {
 
     v = [
       ev("run_resumed", { approval_id: "a2", kind: "tool_call" }, 6),
+      ev("tool_called", { step_id: "s1", call_id: "w1", name: "write_file", arguments: { path: "a" } }, 6),
       ev("approval_resolved", { step_id: "s1", key: "tool:s1:w1", name: "write_file", approved: false }, 7),
       ev("tool_result", { step_id: "s1", call_id: "w1", name: "write_file", output: "The user declined", error: true }, 8),
       ev("run_failed", { error: "cancelled by user" }, 9),
     ].reduce(apply, v);
     expect(v.pending).toBeUndefined();
+    expect(v.steps.s1.calls).toHaveLength(1); // re-announced after resume, not duplicated
     expect(v.steps.s1.calls[0]).toMatchObject({ error: true, pending: false });
     expect(v.status).toBe("cancelled");
   });
