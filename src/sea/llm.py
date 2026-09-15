@@ -94,6 +94,10 @@ class MalformedToolCall(Exception):
     """The model produced a tool call the provider could not parse. Retryable by telling the model."""
 
 
+class RequestTooLarge(Exception):
+    """The conversation exceeds what the provider accepts in one request. The loop compacts and retries."""
+
+
 class Provider(Protocol):
     model: str
 
@@ -156,7 +160,7 @@ class OpenAICompatProvider:
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
 
-        from openai import BadRequestError
+        from openai import APIStatusError, BadRequestError
 
         try:
             async with _limiter():
@@ -166,6 +170,10 @@ class OpenAICompatProvider:
             # That's the model's fault, not the request's: let the loop tell it to try again.
             if any(k in str(e) for k in ("tool_use_failed", "output_parse_failed", "failed_generation")):
                 raise MalformedToolCall(str(e)[:500]) from e
+            raise
+        except APIStatusError as e:
+            if e.status_code == 413 or "Request too large" in str(e):
+                raise RequestTooLarge(str(e)[:300]) from e
             raise
 
         choice = resp.choices[0].message

@@ -70,6 +70,25 @@ results; every record notes which models it ran on. Budget is a design input, no
 A correct refusal was scored as a failure.
 **Fix:** answers are normalised before checks. Keyword checks are brittle; event/file checks are not.
 
+### 11. Data travelled through the model twice
+**Task:** "Fetch the Flask releases from the GitHub API and compute the average gap between the last
+10." First run from the desktop app.
+**What happened:** `http_get` returned ~100 KB of JSON, truncated to 4,000 characters in the tool
+result. The worker then tried to pass "the JSON" to the analysis tool by retyping it as an argument -
+it only had the truncated text, so the tool got broken JSON and answered `0.0`. The retyping also
+pushed the conversation over Groq's free-tier limit of ~8,000 tokens *per request* (HTTP 413), the
+step crashed, and a retry burned 45k tokens on workarounds (`curl` in the network-less sandbox,
+writing to `/tmp`, ...).
+**Fix:** a data-flow rule rather than a prompt tweak. `http_get` now saves the body to
+`fetched/<name>` in the workspace and returns the path plus a 600-character preview; planner,
+toolsmith and worker are told that tools take file paths for anything bigger than a sentence. And
+when a provider rejects a request as too large, the loop trims older tool results and oversized
+arguments and retries once (`compact()`), instead of failing.
+**Result:** same task, 113.7 days / longest gap before 3.1.0, tool built with a `json_path`
+parameter on the first try of the new flow.
+**Lesson:** in an agent, the model is the most expensive and least reliable channel for moving
+bytes. Anything larger than a sentence should move through the filesystem.
+
 ## v1 (carried over)
 
 1. **Duplicate tools instead of editing** - asked to fix a buggy tool, the agent wrote five near-duplicates.

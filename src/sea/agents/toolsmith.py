@@ -30,9 +30,10 @@ Rules:
 - Return JSON-serialisable values (str, int, float, bool, list, dict). Return a value, don't print it.
 - Prefer the standard library. Allowed extra packages (list them in deps): {packages}.
 - Never import {forbidden}. Never call eval/exec/os.system.
-- Separate fetching from computing: the agent already has an http_get tool, so tools should take data
-  (text, a file path in the working directory, numbers) rather than URLs. Only set network=true if there is
-  no other way, and then tests must not touch the network.
+- Separate fetching from computing: the agent already has an http_get tool that saves downloads to a file,
+  so tools take a file path (relative to the working directory) for any data bigger than a sentence, and
+  small values (numbers, short strings) directly. Never take URLs or large text. Only set network=true if
+  there is no other way, and then tests must not touch the network.
 - test_code: 3-6 assert statements on real inputs with known outputs, including one edge case.
   Tests run in the same working directory as the tool; they may create temp files there.
 - Make the tool general. Never hard-code column names, dict keys, date formats or file layouts that the

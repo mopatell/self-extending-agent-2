@@ -200,3 +200,74 @@ async def test_malformed_tool_call_is_fed_back(harness):
     assert result.text == "recovered"
     assert "could not be parsed" in messages[1].content and messages[1].role == "user"
     assert seen[0].payload.get("error")
+
+
+async def test_http_get_saves_to_workspace(harness, monkeypatch):
+    import io
+
+    from sea.tools import builtin
+
+    class Resp(io.BytesIO):
+        headers = type("H", (), {"get_content_type": staticmethod(lambda: "application/json")})()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    big = ("[" + ",".join(f'{{"tag":"v{i}"}}' for i in range(3000)) + "]").encode()
+    monkeypatch.setattr(builtin.urllib.request, "urlopen", lambda req, timeout: Resp(big))
+    db, rid, emitter, human, ctx, seen = harness
+    out = await builtin.http_get(ctx, "https://api.github.com/repos/x/y/releases")
+    path = ctx.workspace / "fetched" / "api-github-com-repos-x-y-releases.json"
+    assert path.read_bytes() == big
+    assert out.startswith(f"Saved {len(big):,} bytes (application/json) to fetched/")
+    assert len(out) < 1000 and "Preview:" in out  # the model sees a path + preview, never the payload
+
+    out = await builtin.http_get(ctx, "https://example.com/data", save_as="in/data.json")
+    assert (ctx.workspace / "in" / "data.json").exists() and "to in/data.json" in out
+
+
+async def test_request_too_large_compacts_and_retries(harness):
+    from sea.llm import RequestTooLarge
+    from sea.loop import compact
+
+    class Provider(FakeProvider):
+        async def complete(self, messages, tools=None, json_mode=False):
+            self.requests.append({"messages": [Message.from_dict(m.to_dict()) for m in messages]})
+            if len(self.requests) == 1:
+                raise RequestTooLarge("413")
+            return Completion("done")
+
+    db, rid, emitter, human, ctx, seen = harness
+    messages = [
+        Message.user("u"),
+        Message("assistant", "", tool_calls=[ToolCall("c1", "add", {"a": 1, "b": 1})]),
+        Message.tool("c1", "x" * 5000),
+        Message("assistant", "", tool_calls=[ToolCall("c2", "add", {"a": 1, "b": 1})]),
+        Message.tool("c2", "y" * 5000),
+        Message("assistant", "", tool_calls=[ToolCall("c3", "add", {"big": "z" * 5000})]),
+        Message.tool("c3", "recent 1"),
+        Message("assistant", "", tool_calls=[ToolCall("c4", "add", {"a": 1, "b": 1})]),
+        Message.tool("c4", "recent 2"),
+    ]
+    provider = Provider([])
+    result = await run_loop(
+        provider=provider, messages=messages, tools=TOOLS, ctx=ctx, emitter=emitter,
+        human=human, db=db, run_id=rid,
+    )  # fmt: skip
+    assert result.text == "done" and len(provider.requests) == 2
+    second = provider.requests[1]["messages"]
+    assert len(second[2].content) < 300 and "trimmed" in second[2].content  # old result shrunk
+    assert second[6].content == "recent 1" and second[8].content == "recent 2"  # recent ones intact
+    assert len(second[5].tool_calls[0].arguments["big"]) < 300  # oversized argument shrunk
+    assert seen[0].payload["error"].startswith("request too large")
+
+    # Nothing left to compact -> the error propagates instead of looping forever.
+    assert compact([Message.user("u"), Message.tool("c", "short")]) is False
+    with pytest.raises(RequestTooLarge):
+        await run_loop(
+            provider=Provider([]), messages=[Message.user("u")], tools=TOOLS, ctx=ctx, emitter=emitter,
+            human=human, db=db, run_id=rid,
+        )  # fmt: skip

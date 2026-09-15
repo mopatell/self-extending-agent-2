@@ -15,7 +15,7 @@ from sea.config import settings
 from sea.db import DB
 from sea.events import Emitter
 from sea.interrupts import TOOL_CALL, Human
-from sea.llm import MalformedToolCall, Message, Provider, ToolCall
+from sea.llm import MalformedToolCall, Message, Provider, RequestTooLarge, ToolCall
 from sea.policy import ALLOW, DENY, classify
 from sea.tools.base import Tool, ToolContext, truncate
 
@@ -62,6 +62,14 @@ async def run_loop(
             )
             messages.append(Message.user(MALFORMED_CALL_HINT))
             continue
+        except RequestTooLarge as e:
+            if not compact(messages):
+                raise
+            emitter.emit(
+                "llm_called", model=provider.model, tokens_in=0, tokens_out=0, tool_calls=[],
+                error=f"request too large; compacted older tool results ({str(e)[:120]})",
+            )  # fmt: skip
+            continue
         db.add_usage(run_id, completion.usage.input_tokens, completion.usage.output_tokens)
         emitter.emit(
             "llm_called",
@@ -82,6 +90,29 @@ async def run_loop(
     db.add_usage(run_id, completion.usage.input_tokens, completion.usage.output_tokens)
     messages.append(completion.as_message())
     return LoopResult(completion.text, max_steps, stopped_early=True)
+
+
+COMPACT_KEEP = 2  # most recent tool results left untouched
+COMPACT_TO = 200  # chars kept of older ones
+
+
+def compact(messages: list[Message]) -> bool:
+    """Shrink older tool results (and oversized tool-call arguments) in place. Returns False if
+    there was nothing left to shrink, so the caller can give up instead of looping."""
+    changed = False
+    tool_idx = [i for i, m in enumerate(messages) if m.role == "tool"]
+    for i in tool_idx[:-COMPACT_KEEP] if len(tool_idx) > COMPACT_KEEP else []:
+        m = messages[i]
+        if len(m.content) > COMPACT_TO:
+            m.content = m.content[:COMPACT_TO] + "\n…[older result trimmed to save context]"
+            changed = True
+    for m in messages:
+        for tc in m.tool_calls:
+            for k, v in tc.arguments.items():
+                if isinstance(v, str) and len(v) > 2000:
+                    tc.arguments[k] = v[:200] + "…[trimmed]"
+                    changed = True
+    return changed
 
 
 def _unanswered_calls(messages: list[Message]) -> list[ToolCall]:

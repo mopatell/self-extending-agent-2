@@ -20,8 +20,12 @@ Rules:
   Do not build a tool that fakes it.
 - Do not re-read a file you just wrote to double-check it; trust the tool result.
 - If a tool errors, read the error and try a different approach.
+- Data flows through files, not through you. http_get saves what it downloads and returns the path;
+  pass that path to tools. Never retype file or download contents into a tool argument.
+- Tools and shell commands run in a sandbox with no network; only http_get can download.
 - Prefer existing tools. If a computation is needed that no tool can do, call build_tool with a precise
-  description of inputs and outputs, then use the new tool. Do not do the computation in your head.
+  description of inputs and outputs (data as a file path), then use the new tool. Do not do the
+  computation in your head.
 - If an agent-written tool returns a wrong, empty or suspicious result, first check you passed the right
   arguments (read the data first if needed), then call fix_tool. Never compute the result yourself instead.
 - If the step is genuinely ambiguous, call ask_human once with a specific question.

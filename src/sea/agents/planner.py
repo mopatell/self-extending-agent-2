@@ -72,8 +72,9 @@ Guidelines:
 - Each step is a self-contained instruction a worker can execute with tools; include concrete values.
 - `tools`: names from the list below that the step will use.
 - `missing_tools`: only for a pure computation or parsing no listed tool can do (e.g. parse a PDF, compute
-  a statistic, transform data). Tools take data (text, file paths, numbers), not URLs - fetching is done
-  with the existing http_get tool. Do not request tools for things a shell command does easily.
+  a statistic, transform data). Tools take a FILE PATH for anything bigger than a sentence (http_get saves
+  downloads to a file in the workspace and returns the path), never URLs and never large text. Do not
+  request tools for things a shell command does easily.
 - Ask for GENERAL tools, not one-off ones: "csv_group_sum(csv_text, group_col, value_col)" beats
   "compute_sales_stats(csv)". Anything that depends on the data's layout (column names, key names, date
   format) must be a parameter, because the tool is written before anyone has looked at the data.

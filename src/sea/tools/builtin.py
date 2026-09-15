@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import re
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -42,13 +44,40 @@ async def run_shell(ctx: ToolContext, command: str) -> str:
     return result.output or ("(no output)" if result.ok else "(command failed with no output)")
 
 
-async def http_get(ctx: ToolContext, url: str) -> str:
-    def fetch() -> str:
-        req = urllib.request.Request(url, headers={"User-Agent": "sea-agent/0.2"})
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            return resp.read(200_000).decode(errors="replace")
+FETCH_LIMIT = 5_000_000
+PREVIEW_CHARS = 600
 
-    return await asyncio.to_thread(fetch)
+
+async def http_get(ctx: ToolContext, url: str, save_as: str = "") -> str:
+    """Fetch a URL into the workspace. Big responses never travel through the model: the tool
+    result is the file path plus a short preview, and other tools read the file."""
+
+    def fetch() -> tuple[bytes, str]:
+        req = urllib.request.Request(url, headers={"User-Agent": "sea-agent/0.2", "Accept": "*/*"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return resp.read(FETCH_LIMIT), resp.headers.get_content_type()
+
+    body, content_type = await asyncio.to_thread(fetch)
+    path = save_as.strip() or _fetch_name(url, content_type)
+    target = _resolve(ctx, path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(body)
+    text = body.decode(errors="replace")
+    preview = text[:PREVIEW_CHARS] + ("…" if len(text) > PREVIEW_CHARS else "")
+    return (
+        f"Saved {len(body):,} bytes ({content_type}) to {path}. "
+        f"Pass this path to a tool or read it with read_file; do not retype the content.\n"
+        f"Preview:\n{preview}"
+    )
+
+
+def _fetch_name(url: str, content_type: str) -> str:
+    parts = urllib.parse.urlsplit(url)
+    slug = re.sub(r"[^a-z0-9]+", "-", (parts.netloc + parts.path).lower()).strip("-")[:80] or "download"
+    ext = {"application/json": "json", "text/html": "html", "text/csv": "csv", "text/plain": "txt"}.get(
+        content_type, "bin"
+    )
+    return f"fetched/{slug}.{ext}"
 
 
 async def ask_human(ctx: ToolContext, question: str) -> str:
@@ -109,8 +138,9 @@ BUILTIN_TOOLS: list[Tool] = [
     Tool(
         _spec(
             "http_get",
-            "Fetch a URL and return the response body (first 200KB).",
-            {"url": {"type": "string"}},
+            "Download a URL into the workspace (default: fetched/<name>). Returns the saved path and a "
+            "short preview. Give the path to other tools instead of copying the content.",
+            {"url": {"type": "string"}, "save_as": {"type": "string"}},
             ["url"],
         ),
         http_get,
