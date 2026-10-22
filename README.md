@@ -113,6 +113,35 @@ distributable bundle under `desktop/src-tauri/target/release/bundle/`.
 
 Shortcuts: `⌘N` new page · `⌘K` focus the composer · `Enter` send · `Shift+Enter` newline.
 
+## Watching websites
+
+A watch is a recurring monitor: it fetches a page on an interval, extracts the thing you care
+about, and pings you on Telegram when it changes or a condition flips (a price drops, tickets
+appear, a status goes from "sold out" to "available"). The trick is that a watch is **compiled
+once** — the ToolSmith builds and tests a small `check_<id>(path)` tool against the real page —
+and then **polled cheaply with no LLM calls**. Self-extension builds the monitor; cron runs it.
+
+```bash
+# 1. Connect a Telegram bot (make one via @BotFather, then message it once):
+uv run sea watch setup-telegram --token <token>   # finds your chat, sends a test ping
+
+# 2. Add a watch in plain language:
+uv run sea watch add "tell me when tickets drop below £80" --url https://… --every 10m
+uv run sea watch add "alert me when this page changes" --url https://… --rendered  # JS pages
+
+# 3. Run the scheduler (its own process — a bad watch can't take down the API):
+uv run sea watch daemon
+```
+
+Other commands: `sea watch list` · `sea watch show <id>` · `sea watch history <id>` ·
+`sea watch run-once <id>` (poll now) · `sea watch pause|resume <id>` · `sea watch rm <id>` ·
+`sea watch recompile <id>` (rebuild the checker after a page's layout changes).
+
+Notes: static fetches use conditional requests (ETag) and back off when a site errors; alerts are
+edge-triggered (no repeats while a condition stays true) and at-least-once (a failed Telegram send
+is retried next poll). `--rendered` needs Playwright: `uv sync --extra rendered && uv run
+playwright install chromium`. JS-heavy or anti-bot sites may still block automated fetches.
+
 ## Configuration (`.env`)
 
 | Variable | Default | Meaning |
@@ -125,8 +154,10 @@ Shortcuts: `⌘N` new page · `⌘K` focus the composer · `Enter` send · `Shif
 | `MAX_LOOP_STEPS` | `12` | tool-call turns per step before the worker is forced to answer |
 | `SANDBOX` | `docker` | `local` runs agent code on the host — dev only, unsafe |
 | `DB_PATH`, `WORKSPACES_DIR` | `data/sea.db`, `workspaces` | where things are stored |
+| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | — | Telegram alerts for watches (`sea watch setup-telegram` fills these) |
 
-Anthropic models need `uv sync --extra anthropic` and `ANTHROPIC_API_KEY`.
+Anthropic models need `uv sync --extra anthropic` and `ANTHROPIC_API_KEY`. Rendered watches need
+`uv sync --extra rendered` and `uv run playwright install chromium`.
 
 ## Testing
 
@@ -173,11 +204,12 @@ re-run the rest later with `uv run python -m evals.run_evals --merge <task ids>`
 
 ```
 src/sea/
-  config.py  llm.py  db.py  events.py  loop.py  policy.py  interrupts.py  api.py  cli.py
+  config.py  llm.py  db.py  events.py  loop.py  policy.py  interrupts.py  notify.py  api.py  cli.py
   agents/     planner.py  toolsmith.py  worker.py  orchestrator.py
   tools/      base.py  builtin.py  registry.py
   sandbox/    Dockerfile  allowlist.py  runner.py
-  migrations/ 001_init.sql
+  watches/    fetch.py  compile.py  poll.py  daemon.py  store.py
+  migrations/ 001_init.sql  002_watches.sql
 tests/   evals/   docs/   data/ (db + mirrored tool sources)   workspaces/ (per conversation)
 ```
 

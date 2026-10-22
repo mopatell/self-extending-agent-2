@@ -78,7 +78,9 @@ they do. For the *reasoning* behind the bigger choices see [DECISIONS.md](DECISI
 | `tools/registry.py` | Static validation of drafts; versioned storage; loading generated tools as sandbox-backed `Tool`s |
 | `sandbox/` | `Dockerfile` (allowlisted packages), the runner, test and call drivers |
 | `api.py` | FastAPI: runs as background tasks, SSE event streaming, resume |
-| `cli.py` | `sea run / chat / resume / approvals / cancel / runs / tools / serve` |
+| `cli.py` | `sea run / chat / resume / approvals / cancel / runs / tools / serve / watch` |
+| `notify.py` | Outbound Telegram alerts (host-side urllib); token is redacted from logs |
+| `watches/` | Recurring monitors: compile a request into a tested `check` tool once, then poll it cheaply (no LLM) and alert on an edge. `fetch` (static/rendered), `compile`, `poll`, `daemon` |
 
 ## The agent loop
 
