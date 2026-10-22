@@ -266,3 +266,59 @@ class DB:
         row["input_schema"] = json.loads(row.pop("input_schema_json"))
         row["deps"] = json.loads(row.pop("deps_json"))
         return row
+
+    # ----------------------------------------------------------------- watches
+
+    def create_watch(
+        self,
+        *,
+        request: str,
+        url: str,
+        fetcher: str = "static",
+        interval_seconds: int = 300,
+        name: str = "",
+        chat_id: str | None = None,
+        wid: str | None = None,
+    ) -> str:
+        wid = wid or new_id()
+        self._exec(
+            """INSERT INTO watches (id, name, request, url, fetcher, interval_seconds, chat_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (wid, name, request, url, fetcher, interval_seconds, chat_id),
+        )
+        return wid
+
+    def get_watch(self, wid: str) -> dict[str, Any] | None:
+        return self._one("SELECT * FROM watches WHERE id = ?", (wid,))
+
+    def list_watches(self, status: str | None = None) -> list[dict[str, Any]]:
+        if status:
+            return self._all("SELECT * FROM watches WHERE status = ? ORDER BY created_at", (status,))
+        return self._all("SELECT * FROM watches ORDER BY created_at")
+
+    def update_watch(self, wid: str, **fields: Any) -> None:
+        fields["updated_at"] = _now()
+        cols = ", ".join(f"{k} = ?" for k in fields)
+        self._exec(f"UPDATE watches SET {cols} WHERE id = ?", (*fields.values(), wid))
+
+    def delete_watch(self, wid: str) -> None:
+        with self.lock, self.conn:
+            self._exec("DELETE FROM watch_events WHERE watch_id = ?", (wid,))
+            self._exec("DELETE FROM watches WHERE id = ?", (wid,))
+
+    def add_watch_event(
+        self, wid: str, type_: str, value: str | None = None, detail: str | None = None
+    ) -> int:
+        seq = self._exec(
+            "SELECT COALESCE(MAX(seq), 0) + 1 FROM watch_events WHERE watch_id = ?", (wid,)
+        ).fetchone()[0]
+        self._exec(
+            "INSERT INTO watch_events (watch_id, seq, type, value, detail) VALUES (?, ?, ?, ?, ?)",
+            (wid, seq, type_, value, detail),
+        )
+        return seq
+
+    def get_watch_events(self, wid: str, limit: int = 50) -> list[dict[str, Any]]:
+        return self._all(
+            "SELECT * FROM watch_events WHERE watch_id = ? ORDER BY seq DESC LIMIT ?", (wid, limit)
+        )

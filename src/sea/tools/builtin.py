@@ -71,6 +71,25 @@ async def http_get(ctx: ToolContext, url: str, save_as: str = "") -> str:
     )
 
 
+async def fetch_rendered(ctx: ToolContext, url: str, save_as: str = "") -> str:
+    """Like http_get, but runs the page in a headless browser first so JavaScript-rendered
+    content is present. Needs the optional Playwright dependency."""
+    from sea.watches import fetch
+
+    fetched = await fetch.fetch_rendered(url)
+    path = save_as.strip() or _fetch_name(url, "text/html")
+    target = _resolve(ctx, path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(fetched.body)
+    text = fetched.body.decode(errors="replace")
+    preview = text[:PREVIEW_CHARS] + ("…" if len(text) > PREVIEW_CHARS else "")
+    return (
+        f"Saved rendered HTML ({len(fetched.body):,} bytes) to {path}. "
+        f"Pass this path to a tool or read it with read_file; do not retype the content.\n"
+        f"Preview:\n{preview}"
+    )
+
+
 def _fetch_name(url: str, content_type: str) -> str:
     parts = urllib.parse.urlsplit(url)
     slug = re.sub(r"[^a-z0-9]+", "-", (parts.netloc + parts.path).lower()).strip("-")[:80] or "download"
@@ -144,6 +163,17 @@ BUILTIN_TOOLS: list[Tool] = [
             ["url"],
         ),
         http_get,
+        risk="approval",
+    ),
+    Tool(
+        _spec(
+            "fetch_rendered",
+            "Download a URL after running its JavaScript in a headless browser (for pages that are "
+            "empty without JS). Same result shape as http_get. Needs Playwright installed.",
+            {"url": {"type": "string"}, "save_as": {"type": "string"}},
+            ["url"],
+        ),
+        fetch_rendered,
         risk="approval",
     ),
     Tool(

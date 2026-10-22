@@ -423,6 +423,163 @@ def cmd_watch_test(args: argparse.Namespace) -> None:
     console.print("[green]✔ sent[/]")
 
 
+def cmd_watch_add(args: argparse.Namespace) -> None:
+    from sea.watches.compile import compile_watch
+    from sea.watches.store import parse_duration
+
+    db = DB()
+    sandbox = get_sandbox()
+    every = parse_duration(args.every) if args.every else None
+    fetcher = "rendered" if args.rendered else "static"
+    console.print(f"[bold]▶ compiling watch[/] for {escape(args.url)} …")
+    result = asyncio.run(
+        compile_watch(
+            db,
+            sandbox,
+            request=args.request,
+            url=args.url,
+            every=every,
+            name=args.name,
+            fetcher=fetcher,
+            listeners=[render],
+        )  # fmt: skip
+    )
+    if not result.ok:
+        console.print(f"[red]✘ {escape(result.message)}[/]")
+        sys.exit(1)
+    console.print(f"[green]✔ {escape(result.message)}[/]")
+    console.print("[dim]start polling with: sea watch daemon[/]")
+
+
+def cmd_watch_list(args: argparse.Namespace) -> None:
+    db = DB()
+    watches = db.list_watches()
+    if not watches:
+        console.print("[dim]no watches yet — add one with: sea watch add[/]")
+        return
+    table = Table(title="Watches")
+    for col in ("id", "name", "status", "every", "last value", "last checked"):
+        table.add_column(col)
+    for w in watches:
+        table.add_row(
+            w["id"], _short(w["name"] or w["request"], 28), w["status"], f"{w['interval_seconds']}s",
+            _short(w["last_value"] or "-", 40), (w["last_checked"] or "-")[:19],
+        )  # fmt: skip
+    console.print(table)
+
+
+def cmd_watch_show(args: argparse.Namespace) -> None:
+    db = DB()
+    w = db.get_watch(args.id)
+    if not w:
+        console.print("[red]no such watch[/]")
+        sys.exit(1)
+    mode = "condition (alert on trigger)" if w["predicate_tool"] else "change (alert on any change)"
+    body = (
+        f"request: {w['request']}\nurl: {w['url']}\nfetcher: {w['fetcher']}\n"
+        f"every: {w['interval_seconds']}s\nmode: {mode}\nstatus: {w['status']}\n"
+        f"check tool: {w['extractor_tool']}\nlast value: {w['last_value']}\n"
+        f"last checked: {w['last_checked']}\nconsecutive errors: {w['consecutive_errors']}"
+    )
+    if w["last_error"]:
+        body += f"\nlast error: {w['last_error']}"
+    console.print(Panel(escape(body), title=f"watch {w['id']} — {escape(w['name'])}"))
+
+
+def cmd_watch_history(args: argparse.Namespace) -> None:
+    db = DB()
+    if not db.get_watch(args.id):
+        console.print("[red]no such watch[/]")
+        sys.exit(1)
+    table = Table(title=f"watch {args.id} history")
+    for col in ("when", "type", "value", "detail"):
+        table.add_column(col)
+    for e in db.get_watch_events(args.id, limit=args.limit):
+        table.add_row(
+            e["created_at"][:19], e["type"], _short(e["value"] or "-", 40), _short(e["detail"] or "-", 40)
+        )
+    console.print(table)
+
+
+def cmd_watch_run_once(args: argparse.Namespace) -> None:
+    from sea.watches.poll import poll_watch
+
+    db = DB()
+    w = db.get_watch(args.id)
+    if not w:
+        console.print("[red]no such watch[/]")
+        sys.exit(1)
+    result = asyncio.run(poll_watch(db, get_sandbox(), w))
+    tag = {"notified": "green", "error": "red"}.get(result.status, "cyan")
+    console.print(f"[{tag}]{result.status}[/] {escape(result.value or result.detail or '')}")
+
+
+def cmd_watch_pause(args: argparse.Namespace) -> None:
+    _set_watch_status(args.id, "paused")
+
+
+def cmd_watch_resume(args: argparse.Namespace) -> None:
+    _set_watch_status(args.id, "active", reset_errors=True)
+
+
+def _set_watch_status(wid: str, status: str, reset_errors: bool = False) -> None:
+    db = DB()
+    if not db.get_watch(wid):
+        console.print("[red]no such watch[/]")
+        sys.exit(1)
+    fields: dict[str, Any] = {"status": status}
+    if reset_errors:
+        fields["consecutive_errors"] = 0
+        fields["last_error"] = None
+    db.update_watch(wid, **fields)
+    console.print(f"[dim]watch {wid} → {status}[/]")
+
+
+def cmd_watch_recompile(args: argparse.Namespace) -> None:
+    from sea.watches.compile import recompile_watch
+
+    db = DB()
+    if not db.get_watch(args.id):
+        console.print("[red]no such watch[/]")
+        sys.exit(1)
+    console.print(f"[bold]▶ rebuilding checker[/] for watch {args.id} …")
+    result = asyncio.run(recompile_watch(db, get_sandbox(), args.id, listeners=[render]))
+    if not result.ok:
+        console.print(f"[red]✘ {escape(result.message)}[/]")
+        sys.exit(1)
+    console.print(f"[green]✔ {escape(result.message)}[/]")
+
+
+def cmd_watch_rm(args: argparse.Namespace) -> None:
+    db = DB()
+    if not db.get_watch(args.id):
+        console.print("[red]no such watch[/]")
+        sys.exit(1)
+    db.delete_watch(args.id)
+    console.print(f"[dim]removed watch {args.id}[/]")
+
+
+def cmd_watch_daemon(args: argparse.Namespace) -> None:
+    from sea.watches.daemon import WatchDaemon
+    from sea.watches.poll import PollResult
+
+    db = DB()
+    sandbox = get_sandbox()
+
+    def on_poll(w: dict[str, Any], r: PollResult) -> None:
+        if r.status in ("notified", "changed", "error"):
+            tag = {"notified": "green", "error": "red"}.get(r.status, "yellow")
+            console.print(f"[{tag}]{r.status}[/] {w['id']} {escape(_short(r.value or r.detail or '', 60))}")
+
+    daemon = WatchDaemon(db, sandbox, tick=args.tick, on_poll=on_poll)
+    active = len(db.list_watches("active"))
+    console.print(f"[bold]▶ watch daemon[/] polling {active} active watch(es) · Ctrl-C to stop")
+    try:
+        asyncio.run(daemon.run(max_cycles=1 if args.once else None))
+    except KeyboardInterrupt:
+        console.print("\n[dim]stopped[/]")
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="sea", description="Self-extending agent")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -477,6 +634,51 @@ def main(argv: list[str] | None = None) -> None:
     w = wsub.add_parser("test", help="send a test Telegram message")
     w.add_argument("text", nargs="?", default="test alert from sea 🔔")
     w.set_defaults(fn=cmd_watch_test)
+
+    w = wsub.add_parser("add", help="create a watch from a plain-language request")
+    w.add_argument("request", help="what to watch for, e.g. 'tell me when tickets drop below 80'")
+    w.add_argument("--url", required=True, help="page to watch")
+    w.add_argument("--every", help="poll interval, e.g. 30s, 5m, 2h (default 5m)")
+    w.add_argument("--name", help="short title for alerts")
+    w.add_argument("--rendered", action="store_true", help="render JavaScript with a headless browser")
+    w.set_defaults(fn=cmd_watch_add)
+
+    w = wsub.add_parser("list", help="list watches")
+    w.set_defaults(fn=cmd_watch_list)
+
+    w = wsub.add_parser("show", help="show one watch")
+    w.add_argument("id")
+    w.set_defaults(fn=cmd_watch_show)
+
+    w = wsub.add_parser("history", help="recent checks and alerts for a watch")
+    w.add_argument("id")
+    w.add_argument("--limit", type=int, default=30)
+    w.set_defaults(fn=cmd_watch_history)
+
+    w = wsub.add_parser("run-once", help="poll a watch now (test it without waiting)")
+    w.add_argument("id")
+    w.set_defaults(fn=cmd_watch_run_once)
+
+    w = wsub.add_parser("pause", help="stop polling a watch")
+    w.add_argument("id")
+    w.set_defaults(fn=cmd_watch_pause)
+
+    w = wsub.add_parser("resume", help="resume a paused or failed watch")
+    w.add_argument("id")
+    w.set_defaults(fn=cmd_watch_resume)
+
+    w = wsub.add_parser("recompile", help="rebuild a watch's checker after a page changed")
+    w.add_argument("id")
+    w.set_defaults(fn=cmd_watch_recompile)
+
+    w = wsub.add_parser("rm", help="delete a watch")
+    w.add_argument("id")
+    w.set_defaults(fn=cmd_watch_rm)
+
+    w = wsub.add_parser("daemon", help="poll due watches on a loop")
+    w.add_argument("--tick", type=int, default=5, help="seconds between due-checks")
+    w.add_argument("--once", action="store_true", help="run a single cycle and exit")
+    w.set_defaults(fn=cmd_watch_daemon)
 
     args = parser.parse_args(argv)
     settings.db_path.parent.mkdir(parents=True, exist_ok=True)

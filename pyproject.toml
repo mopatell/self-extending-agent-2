@@ -17,6 +17,7 @@ dependencies = [
 
 [project.optional-dependencies]
 anthropic = ["anthropic>=1.4"]
+rendered = ["playwright>=1.40"]  # headless browser for JS-rendered watched pages
 
 [project.scripts]
 sea = "sea.cli:main"
