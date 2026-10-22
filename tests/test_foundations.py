@@ -82,10 +82,13 @@ def test_get_provider_requires_key(monkeypatch):
 
 
 def test_migrations_are_idempotent(tmp_path):
+    from sea.db import MIGRATIONS_DIR
+
+    expected = len(list(MIGRATIONS_DIR.glob("*.sql")))
     path = tmp_path / "t.db"
     DB(path).close()
-    d = DB(path)
-    assert d._one("SELECT COUNT(*) AS n FROM schema_migrations")["n"] == 1
+    d = DB(path)  # second open must not re-apply anything
+    assert d._one("SELECT COUNT(*) AS n FROM schema_migrations")["n"] == expected
     d.close()
 
 

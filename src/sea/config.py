@@ -33,6 +33,10 @@ class Settings:
     workspaces_dir: Path = field(default_factory=lambda: Path(_env("WORKSPACES_DIR", "workspaces")))
     sandbox_image: str = field(default_factory=lambda: _env("SANDBOX_IMAGE", "sea-sandbox"))
 
+    # Notifications (used by watches). Empty = disabled.
+    telegram_bot_token: str = field(default_factory=lambda: _env("TELEGRAM_BOT_TOKEN", ""))
+    telegram_chat_id: str = field(default_factory=lambda: _env("TELEGRAM_CHAT_ID", ""))
+
     def reload(self) -> None:
         """Re-read every field from the environment (after a settings change)."""
         self.__dict__.update(Settings().__dict__)
@@ -65,6 +69,8 @@ EDITABLE: dict[str, tuple[str, str]] = {
     "MAX_LOOP_STEPS": ("int", "Max tool turns per step"),
     "TOOL_RESULT_MAX_CHARS": ("int", "Tool result max chars"),
     "SANDBOX": ("choice:docker,local", "Sandbox"),
+    "TELEGRAM_BOT_TOKEN": ("secret", "Telegram bot token"),
+    "TELEGRAM_CHAT_ID": ("text", "Telegram chat ID"),
 }
 
 MASK = "••••"

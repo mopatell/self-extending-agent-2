@@ -370,6 +370,59 @@ def cmd_tools(args: argparse.Namespace) -> None:
     console.print(table)
 
 
+# ----------------------------------------------------------------------------- watches
+
+
+def cmd_watch_setup_telegram(args: argparse.Namespace) -> None:
+    """Save the bot token, find the chat to notify, and send a test message."""
+    from sea import notify
+    from sea.config import write_settings
+
+    if args.token:
+        write_settings({"TELEGRAM_BOT_TOKEN": args.token.strip()})
+    if not settings.telegram_bot_token:
+        console.print(
+            "[red]no bot token.[/] Create a bot with @BotFather, then run:\n"
+            "  sea watch setup-telegram --token <token>"
+        )
+        sys.exit(1)
+
+    try:
+        chat = notify.discover_chat()
+    except notify.TelegramError as e:
+        console.print(f"[red]{escape(str(e))}[/]")
+        sys.exit(1)
+    if chat is None:
+        console.print(
+            "[yellow]No messages to the bot yet.[/] Open Telegram, send the bot any message "
+            "(e.g. /start), then re-run this command."
+        )
+        sys.exit(1)
+
+    write_settings({"TELEGRAM_CHAT_ID": chat.chat_id})
+    label = f" ({chat.name})" if chat.name else ""
+    try:
+        notify.send_telegram("sea is connected ✅ — you'll get watch alerts here.")
+    except notify.TelegramError as e:
+        console.print(
+            f"[red]saved chat {chat.chat_id}{escape(label)} but test send failed:[/] {escape(str(e))}"
+        )
+        sys.exit(1)
+    console.print(f"[green]✔ Telegram ready.[/] Alerts go to chat {chat.chat_id}{escape(label)}.")
+
+
+def cmd_watch_test(args: argparse.Namespace) -> None:
+    """Send a test message to the configured chat."""
+    from sea import notify
+
+    try:
+        notify.send_telegram(args.text)
+    except notify.TelegramError as e:
+        console.print(f"[red]{escape(str(e))}[/]")
+        sys.exit(1)
+    console.print("[green]✔ sent[/]")
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="sea", description="Self-extending agent")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -413,6 +466,17 @@ def main(argv: list[str] | None = None) -> None:
     p = sub.add_parser("tools", help="list agent-written tools, or show one")
     p.add_argument("name", nargs="?")
     p.set_defaults(fn=cmd_tools)
+
+    p = sub.add_parser("watch", help="recurring website monitors with Telegram alerts")
+    wsub = p.add_subparsers(dest="watch_cmd", required=True)
+
+    w = wsub.add_parser("setup-telegram", help="connect a Telegram bot for alerts")
+    w.add_argument("--token", help="bot token from @BotFather (saved to .env)")
+    w.set_defaults(fn=cmd_watch_setup_telegram)
+
+    w = wsub.add_parser("test", help="send a test Telegram message")
+    w.add_argument("text", nargs="?", default="test alert from sea 🔔")
+    w.set_defaults(fn=cmd_watch_test)
 
     args = parser.parse_args(argv)
     settings.db_path.parent.mkdir(parents=True, exist_ok=True)
